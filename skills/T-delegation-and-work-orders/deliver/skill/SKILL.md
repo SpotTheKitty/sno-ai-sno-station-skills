@@ -1,6 +1,6 @@
 ---
 name: deliver
-description: "Carry out a released charter to a proven result: plan only as much as the work needs, do the work through the project's own workers, prove every success check with a recorded real run, get one independent review, and close honestly. Invoke explicitly as `$deliver <charter>` (Codex) or `/deliver <charter>` (Claude), or the way your agent invokes a skill, or when a dispatch names you the executor of a charter."
+description: "Carry out a released charter to a proven result: plan only as much as the work needs, do the work through the project's own workers, prove every success check with a recorded real run, get one independent review, and close honestly. Invoke explicitly as `$deliver <charter>` (Codex) or `/deliver <charter>` (Claude, Cursor), or the way your agent invokes a skill, or when a dispatch names you the executor of a charter."
 requires:
   programs: []
   harness:

@@ -9,17 +9,19 @@ set -Eeuo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-usage: rotate-agent-preflight --from codex|claude --to codex|claude --cwd <checkout>
+usage: rotate-agent-preflight --from claude-code|codex|cursor|hermes|openclaw --to <agent> [--model <M>] [--provider <P>] --cwd <checkout>
                               [--sender <seat-address>] [--quota-cmd <cmd>]
 prints one line per check: OK <check> | FAIL <check>: <what> -> <what to do>
 USAGE
   exit 2
 }
 
-FROM="" TO="" CWD="" SENDER="" QUOTA_CMD=(sno subscription-quota-check)
+MODEL="" PROVIDER="" FROM="" TO="" CWD="" SENDER="" QUOTA_CMD=(sno subscription-quota-check)
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from) FROM="${2:-}"; shift 2 ;;
+    --model) MODEL="${2:-}"; shift 2 ;;
+    --provider) PROVIDER="${2:-}"; shift 2 ;;
     --to) TO="${2:-}"; shift 2 ;;
     --cwd) CWD="${2:-}"; shift 2 ;;
     --sender) SENDER="${2:-}"; shift 2 ;;
@@ -28,11 +30,22 @@ while [[ $# -gt 0 ]]; do
     *) printf 'rotate-agent-preflight: unknown option %s\n' "$1" >&2; usage ;;
   esac
 done
-[[ "$FROM" =~ ^(codex|claude)$ && "$TO" =~ ^(codex|claude)$ && "$FROM" != "$TO" && -n "$CWD" ]] || usage
+[[ "$FROM" =~ ^(claude-code|codex|cursor|hermes|openclaw)$ && "$TO" =~ ^(claude-code|codex|cursor|hermes|openclaw)$ && "$FROM" != "$TO" && -n "$CWD" ]] || usage
 
+KIND="$TO"
+case "$TO" in claude-code) KIND=claude ;; cursor) KIND=cursor-agent ;; esac
+[[ "$TO" != hermes && "$TO" != openclaw || ( -n "$MODEL" && -n "$PROVIDER" ) ]] || usage
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+DEADLINE=$((SECONDS + 285))
+bounded() {
+  local cap="$1" left=$((DEADLINE - SECONDS)); shift
+  (( left > 0 )) || return 1
+  (( left >= cap )) || cap="$left"
+  timeout "$cap" "$@"
+}
 SEAT="preflight.rotate-agent@$(hostname -s | tr '[:upper:]' '[:lower:]')"
 readonly SEAT
-readonly ROOT="${SNO_REACH_ROOT:-$HOME/.local/state/sno-reach}"
+readonly ROOT="${SNO_REACH_STATE_ROOT:-${SNO_REACH_ROOT:-$HOME/.local/state/sno-reach}}"
 readonly STARTUP_SECONDS=90
 
 ok() { printf 'OK %s\n' "$1"; }
@@ -42,37 +55,39 @@ fail() { # check what what-to-do
 }
 
 # 1. Tools this skill and the handoff run on.
-for tool in "${QUOTA_CMD[0]}" jq tmux sno; do
+for tool in "${QUOTA_CMD[0]}" jq tmux sno timeout; do
   command -v "$tool" >/dev/null || fail tools "$tool is not on PATH" "install it (sno setup installs sno, with heartbeat and subscription-quota-check as sno subcommands)"
 done
-version="$(sno reach --version 2>/dev/null || true)"
+version="$(bounded 10 sno reach --version 2>/dev/null || true)"
 [[ "$version" =~ ^([0-9]+)\. && ${BASH_REMATCH[1]} -ge 2 ]] || fail tools "sno reach --version printed '${version:-nothing}', need 2.0 or newer" "update Reach with sno setup"
 ok tools
 
 # 2. The receiver vendor's command, and the checkout it will work in.
-command -v "$TO" >/dev/null || fail receiver-command "$TO is not on PATH" "install the $TO CLI on this machine"
+command -v "$KIND" >/dev/null || fail receiver-command "$TO is not on PATH" "install the $TO CLI on this machine"
 ok receiver-command
 [[ -d "$CWD" ]] && git -C "$CWD" rev-parse --show-toplevel >/dev/null 2>&1 || fail checkout "$CWD is not a git work tree" "pass the checkout the working agent uses"
 ok checkout
 
 # 3. The sender must be reachable, or the order at ROTATE has nowhere to go.
 if [[ -n "$SENDER" ]]; then
-  sno reach seats --json 2>/dev/null | jq -e --arg a "$SENDER" 'select(.address == $a)' >/dev/null ||
+  bounded 10 sno reach seats --json 2>/dev/null | jq -e --arg a "$SENDER" 'select(.address == $a)' >/dev/null ||
     fail sender-seat "$SENDER is not in sno reach seats" "have the working agent run join-talk in $CWD, then rerun"
   ok sender-seat
 fi
 
 # 4. Both quotas readable now; the receiver must have headroom or there is nobody to rotate to.
 read_verdict() {
-  local out
-  out="$("${QUOTA_CMD[@]}" --vendor "$1" --json --quiet 2>/dev/null || true)"
-  jq -r '.vendors[0].verdict // "unknown"' <<<"$out" 2>/dev/null || printf 'unknown\n'
+  local agent="$1" out args=(--agent "$1" --json)
+  if [[ "$agent" == "$FROM" && -n "$SENDER" ]]; then args+=(--seat "$SENDER"); fi
+  if [[ "$agent" == "$TO" && -n "$MODEL" ]]; then args+=(--model "$MODEL"); fi
+  out="$(bounded 60 "${QUOTA_CMD[@]}" "${args[@]}")" || printf 'rotate-agent-preflight: quota read failed agent=%s; inspecting verdict\n' "$agent" >&2
+  jq -r '.vendor.verdict // "unknown"' <<<"$out" 2>/dev/null || printf 'unknown\n'
 }
 verdict="$(read_verdict "$FROM")"
-[[ "$verdict" =~ ^(go|short_only|wait)$ ]] || fail quota-from "$FROM quota reads '$verdict'" "log in to $FROM on this machine so its quota can be read"
+[[ "$verdict" =~ ^(go|short_only|wait|owner_action|unread)$ ]] || fail quota-from "$FROM quota reads '$verdict'" "read the sender model before arming"
 ok quota-from
 verdict="$(read_verdict "$TO")"
-[[ "$verdict" =~ ^(go|short_only)$ ]] || fail quota-to "$TO quota reads '$verdict'" "log in to $TO, or wait for its quota to reset; a receiver with no quota cannot take the task"
+[[ "$verdict" =~ ^(go|short_only|unread)$ ]] || fail quota-to "$TO quota reads '$verdict'" "try the next candidate"
 ok quota-to
 
 # 5. A live receiver of the --to vendor in this checkout: spawn on a tmux seat, wait for
@@ -82,24 +97,45 @@ pane=""
 cleanup() {
   local rc=$?
   trap - EXIT
-  [[ -z "$pane" ]] || tmux kill-session -t "$pane" 2>/dev/null || true
-  [[ ! -f "$ROOT/$SEAT/reachable.json" ]] || sno reach unregister --as "$SEAT" >/dev/null 2>&1 || true
+  DEADLINE=$((DEADLINE + 10)) # Leave time to remove the trial seat.
+  [[ -z "$pane" ]] || bounded 5 tmux kill-session -t "$pane" 2>/dev/null || true
+  [[ ! -f "$ROOT/$SEAT/reachable.json" ]] || bounded 5 sno reach unregister --as "$SEAT" >/dev/null 2>&1 || true
   exit "$rc"
 }
 trap cleanup EXIT
 [[ ! -f "$ROOT/$SEAT/reachable.json" ]] || fail receiver-seat "$SEAT is still registered from an earlier run" "run: sno reach unregister --as $SEAT"
-sno reach init --as "$SEAT" --name preflight >/dev/null 2>&1 || fail receiver-seat "sno reach init --as $SEAT refused" "run it by hand and read its message"
-spawned="$(sno reach spawn "$TO" --as "$SEAT" --cwd "$CWD" --window 2>&1)" ||
+bounded 10 sno reach init --as "$SEAT" --name preflight >/dev/null 2>&1 || fail receiver-seat "sno reach init --as $SEAT refused" "run it by hand and read its message"
+spawn=(sno reach spawn "$KIND" --as "$SEAT" --cwd "$CWD" --window)
+[[ -z "$MODEL" ]] || spawn+=(--model "$MODEL")
+[[ -z "$PROVIDER" ]] || spawn+=(--provider "$PROVIDER")
+spawned="$(bounded 150 "${spawn[@]}" 2>&1)" ||
   fail receiver-seat "sno reach spawn $TO --window refused: ${spawned##*$'\n'}" "fix what it names, then rerun"
 pane="$(jq -r '.identity.value' "$ROOT/$SEAT/reachable.json")"
 # The seat's startup turn is over when its terminal has been quiet for ten seconds.
-sno reach watch "$SEAT" --idle 10 --timeout "$STARTUP_SECONDS" >/dev/null 2>&1 ||
+bounded "$STARTUP_SECONDS" sno reach watch "$SEAT" --idle 10 --timeout "$STARTUP_SECONDS" >/dev/null 2>&1 ||
   fail receiver-start "$TO kept printing for ${STARTUP_SECONDS}s after spawn" "open $TO in $CWD by hand and see what it is doing"
 if tmux capture-pane -p -t "$pane" | grep -qi 'trust'; then
   fail receiver-trust "$TO stopped at its trust prompt in $CWD" "open $TO once in $CWD by hand, accept the prompt, exit, then rerun"
 fi
 nonce="PREFLIGHT_$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
-sno reach call "$SEAT" "Reply with exactly $nonce and nothing else." --expect "$nonce" --timeout 120 >/dev/null 2>&1 ||
-  fail receiver-answer "$TO did not answer a call within 120s" "open $TO in $CWD by hand and check it can take a prompt; screen tail: $(tmux capture-pane -p -t "$pane" 2>/dev/null | grep -v '^\s*$' | tail -3 | tr '\n' '|')"
+answer="$(bounded 120 sno reach call "$SEAT" "Reply with exactly $nonce and nothing else." --expect "$nonce" --timeout 120)" ||
+  fail receiver-answer "$TO did not answer a call" "try the next candidate"
+if [[ "$TO" == hermes || "$TO" == openclaw ]]; then
+  receipt="$(jq -er 'select(.verified == true) | .deliveryReceipt | select(type == "string" and length > 0)' <<<"$answer")" || receipt=''
+  actual=''
+  if [[ -n "$receipt" ]]; then
+    actual="$(bounded 20 "$HERE/rotate-agent-answer-provider" --agent "$TO" --seat "$SEAT" --receipt "$receipt")" || actual=''
+  fi
+  if [[ -z "$actual" || "$actual" != "$PROVIDER" ]]; then
+    printf 'rotate-agent-preflight: operation=answer seat=%s command=call error=wrong-or-unknown-provider expected=%s actual=%s\n' "$SEAT" "$PROVIDER" "${actual:-unknown}" >&2
+    fail receiver-answer "provider was ${actual:-unknown}, expected $PROVIDER" "try the next candidate"
+  fi
+elif [[ "$TO" == cursor ]]; then
+  current="$(bounded 20 sno subscription-quota-check --agent cursor --seat "$SEAT" --json)" || current='{}'
+  if [[ "$(jq -r '.model // empty' <<<"$current")" != "$MODEL" ||
+        ( -n "$PROVIDER" && "$(jq -r '.provider // empty' <<<"$current")" != "$PROVIDER" ) ]]; then
+    fail receiver-answer "Cursor did not answer on $MODEL/$PROVIDER" "try the next candidate"
+  fi
+fi
 ok receiver-answer
 printf 'READY from=%s to=%s cwd=%s\n' "$FROM" "$TO" "$CWD"

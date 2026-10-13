@@ -59,6 +59,5 @@
   "lessonRefusedScope": "{id}: refused: {reason}",
   "usageAppendFailed": "could not record use to ledger/usage.jsonl: {error}",
   "usageMalformedCount": "skipped {n} unparsable usage line(s)",
-  "ceilingStopped": "run stopped at ceiling: {ceiling}",
-  "credentialMissing": "seed: {cli} credential file missing: {path}"
+  "ceilingStopped": "run stopped at ceiling: {ceiling}"
 }

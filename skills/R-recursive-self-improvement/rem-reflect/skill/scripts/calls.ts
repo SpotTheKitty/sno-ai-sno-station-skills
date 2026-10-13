@@ -25,10 +25,10 @@ const outputText = (value: unknown): string => Array.isArray(value) ? contentTex
 
 export function readCalls(trace: Trace): CallRecord[] {
   const calls: CallRecord[] = [];
-  if (trace.agent_id === 'claude-code') {
+  if (trace.agent_id !== 'codex') {
     const uses = new Map<string, { item: StoredRecord; block: Record<string, unknown> }>();
     for (const item of trace.records) {
-      const message = payload(item.record, 'claude-code');
+      const message = payload(item.record, trace.agent_id);
       if (!Array.isArray(message.content)) continue;
       for (const block of message.content.filter(isObject)) {
         if (block.type === 'tool_use' && typeof block.id === 'string') uses.set(block.id, { item, block });
@@ -38,7 +38,9 @@ export function readCalls(trace: Trace): CallRecord[] {
         const structured = item.record.toolUseResult;
         const benign = isObject(structured) && 'returnCodeInterpretation' in structured;
         const exit = /^(?:Error: )?Exit code (-?\d+)/.exec(result)?.[1]
-          ?? (typeof structured === 'string' ? /^(?:Error: )?Exit code (-?\d+)/.exec(structured)?.[1] : undefined);
+          ?? (typeof structured === 'string' ? /^(?:Error: )?Exit code (-?\d+)/.exec(structured)?.[1] : undefined)
+          ?? (trace.agent_id !== 'claude-code' && isObject(structured) && typeof structured.exit_code === 'number'
+            ? String(structured.exit_code) : undefined);
         const exitCode = exit === undefined ? null : Number(exit);
         const failed = block.is_error === true && !benign;
         const denial = item.record.toolDenialKind;

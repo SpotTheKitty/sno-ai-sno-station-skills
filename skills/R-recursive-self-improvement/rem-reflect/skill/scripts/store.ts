@@ -112,11 +112,11 @@ export function writeState(store: string, state: State): void {
 
 export function initializeStore(store: string, config: Config, state: State): void {
   chmodSync(store, 0o700);
-  for (const directory of ['raw', 'wiki/patterns', 'ledger', 'staging', '.loop-home/claude', '.loop-home/codex']) {
+  for (const directory of ['raw', 'wiki/patterns', 'ledger', 'staging']) {
     privateDirectory(join(store, directory));
     chmodSync(join(store, directory), 0o700);
   }
-  if (!existsSync(join(store, '.git'))) git(store, ['init', '--quiet']);
+  git(store, ['init', '--quiet']);
   if (!existsSync(join(store, '.gitignore'))) atomicWrite(join(store, '.gitignore'), 'run.lock\n.recovery-lock\n.tmp-*\n.loop-home/\n');
   if (!existsSync(join(store, 'config.json'))) writeJson(join(store, 'config.json'), config);
   if (!existsSync(join(store, 'state.json'))) writeState(store, state);

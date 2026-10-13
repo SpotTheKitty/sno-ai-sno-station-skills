@@ -3,7 +3,7 @@
 # for a PL to start an executor).
 #
 # Needs: Linux, tmux, systemd user session (systemd-run, systemctl --user), flock, jq,
-# git, the `sno` CLI, and the chosen runtime CLI (codex, claude, hermes or openclaw).
+# git, the `sno` CLI, and the chosen runtime CLI (codex, claude, hermes, openclaw or cursor-agent).
 #
 # A separate systemd service enforces the wall budget T: SIGTERM at T, then SIGKILL at
 # 1.5T. A relaunch needs a fresh spawn; a relaunch after the wall needs the owner
@@ -16,14 +16,15 @@
 #                 --addr <executor Reach address> [--lane <name>]
 #                 [--fence <file>] [--callsign <name>] [--kind executor]
 #                 [--resume <session-id>] [--log <path>]
-#                 [--runtime codex|claude|hermes|openclaw] [--window]
+#                 [--runtime codex|claude|hermes|openclaw|cursor] [--window]
 #   spawn-exec.sh -h|--help
 #
 # Required: --journey, --repo, --budget-h, --dispatch, --addr.
 # Values: --class closure|build|operate (default build);
-#         --runtime codex|claude|hermes|openclaw (default codex; pass --runtime claude when
-#         the executor should be a Claude session). hermes (the Hermes Agent CLI) and openclaw
-#         (the OpenClaw CLI) are further supported agent CLIs; they cannot resume a session.
+#         --runtime codex|claude|hermes|openclaw|cursor (default codex; pass --runtime claude when
+#         the executor should be a Claude session). hermes (the Hermes Agent CLI), openclaw
+#         (the OpenClaw CLI) and cursor (the Cursor CLI, cursor-agent) are further supported agent
+#         CLIs; they cannot resume a session.
 # --resume <session-id> relaunches an existing codex or claude session; other runtimes refuse it.
 # --window is accepted and ignored: tmux is the only seat channel.
 # Exit: 0 spawned; 2 usage; 3 live-session conflict;
@@ -89,7 +90,7 @@ done
   echo "spawn-exec: need --journey --repo --budget-h --dispatch" >&2; exit 2; }
 # An executor that cannot be talked to, woken, or tracked is not started: a missing or
 # malformed address is refused before the runtime starts.
-case "$runtime" in codex|claude|hermes|openclaw) : ;; *) echo "spawn-exec: unsupported runtime: $runtime" >&2; exit 2 ;; esac
+case "$runtime" in codex|claude|hermes|openclaw|cursor) : ;; *) echo "spawn-exec: unsupported runtime: $runtime" >&2; exit 2 ;; esac
 if [ -n "$resume" ]; then
   case "$runtime" in codex|claude) : ;; *)
     echo "spawn-exec: --resume is not supported for runtime $runtime (only codex and claude sessions can be resumed); nothing was started" >&2; exit 2 ;; esac
@@ -113,7 +114,8 @@ repo="$(cd -- "$repo" && pwd -P)"
 main_root="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$repo")"
 # Check every prerequisite before any resource is claimed, and report all that are missing in one message.
 missing_deps=()
-for dep in "$runtime" tmux sno flock systemd-run systemctl jq; do
+runtime_cmd="$runtime"; [ "$runtime" != cursor ] || runtime_cmd=cursor-agent   # `cursor` alone is the IDE launcher
+for dep in "$runtime_cmd" tmux sno flock systemd-run systemctl jq; do
   command -v "$dep" >/dev/null || missing_deps+=("$dep")
 done
 if [ "${#missing_deps[@]}" -gt 0 ]; then
@@ -536,6 +538,7 @@ EOF
     claude) printf '  claude --dangerously-skip-permissions %s \\\n' "$resume_line" ;;
     hermes) printf '  hermes chat --yolo --query \\\n' ;;
     openclaw) printf '  openclaw tui --message \\\n' ;;
+    cursor) printf '  cursor-agent --force --trust \\\n' ;;   # --trust: a fresh checkout's trust question would hold the seat
   esac
   # No pipe: an interactive terminal program dies when its stdout becomes a pipe
   # (`codex ... | tee log` ends the session). The transcript is captured by tapping the

@@ -1,6 +1,6 @@
 ---
 name: rem-reflect
-description: "The local experience loop: once a day, turn this machine's own Claude Code and Codex sessions into human-gated skill changes and lessons. Run, review with accept/reject/tbd, recall at session start."
+description: "Learn daily from this machine's Claude Code, Codex, Hermes, OpenClaw and Cursor sessions. Review skill changes and lessons with accept/reject/tbd; recall lessons at session start."
 requires:
   programs: []
   harness:
@@ -15,13 +15,13 @@ requires:
 
 > **Before you use it.** Sno Station sets the sharing level when it installs, by mode: `full` for `agent-native` and
 > `rem-enhanced`, `metadata-only` for `local-first`; it never overwrites a choice you already made. At `full`, this tool sends
-> the text of your Claude Code and Codex sessions and the full text of every installed skill to Sno's cloud, and it copies your
-> own Claude and Codex login files into its private store to label sessions. In `local-first` nothing is sent to Sno, but the
-> text of a few sessions a night still goes to your own Claude Code or Codex account when this tool asks it for lessons.
+> the text of your Claude Code, Codex, Hermes, OpenClaw and Cursor sessions and every installed skill to Sno's cloud. It uses your
+> Claude and Codex login in place and copies only Cursor's login into its isolated home to label sessions. In `local-first` nothing is sent to Sno, but the
+> text of a few sessions a night still goes to each session's own agent account when this tool asks it for lessons; Hermes and OpenClaw use their own login without a credential copy.
 > "What a run reads, copies and uploads" below lists everything.
 > Turn uploading off at any time with `sno station consent off`.
 
-`rem-reflect` reads this machine's Claude Code and Codex sessions once a day. When the Sno Station
+`rem-reflect` reads this machine's Claude Code, Codex, Hermes, OpenClaw and Cursor sessions once a day. When the Sno Station
 settings select `agent-native` or `rem-enhanced`, each session's own CLI (on the
 host's default model) conservatively decides keep/drop and labels its outcome. Each completed run
 is sent through `sno rem judge`; that command permits session and skill uploads only at full consent.
@@ -32,10 +32,10 @@ about the few sessions with the most failures and owner corrections, and stores 
 skill reminder per harness that it can quote verbatim from the session, for you to accept or reject.
 Local adoption still waits for the owner (here, you: the person who owns the machine and its skills).
 
-**What a run reads, copies and uploads.** A run reads the session transcripts under `~/.claude/projects` and `~/.codex/sessions` (the first run looks back seven days, later runs continue where the last stopped), Claude's `history.jsonl`, every installed `SKILL.md` under `~/.claude/skills` and `~/.codex/skills`, and each session's git `origin` URL. It keeps a locally redacted copy of what it reads in its own store (`~/.sno/experience`, or `$REM_REFLECT_STORE`). To label sessions with your own CLI, it copies `~/.claude/.credentials.json` and `~/.codex/auth.json` (mode 0600, refreshed every run, nothing else from those directories) into `<store>/.loop-home/`, and the labeling turns send the rendered session to your own Claude or Codex account. Only in `agent-native` or `rem-enhanced` with consent `full` does it upload to Sno's cloud: the kept session text (common secrets such as API keys, bearer tokens and private keys are pattern-redacted first, best effort), tool-call targets and error excerpts, the project id (the normalized git remote, or a hash of the directory when there is none), and the complete text of every installed `SKILL.md`. Consent `off` or `metadata-only` uploads none of it. When no consent file exists yet, installation announces this boundary and selects `metadata-only` for `local-first`, `full` for `agent-native` and `rem-enhanced`; change it any time with `sno station consent off|metadata-only|full`.
+**What a run reads, copies and uploads.** A run reads `~/.claude/projects`, `~/.codex/sessions`, `~/.cursor/projects/*/agent-transcripts`, Hermes's `state.db` read-only via `python3`, and OpenClaw's `sessions list --json` and `export-trajectory` events (seven days on first run, then continuing; sessions must be quiet for thirty minutes). It skips Hermes's first-user-message `[sno-oneshot]` marker and OpenClaw's `:explicit:sno-oneshot-` keys. It reads Claude's `history.jsonl`, the repository the Sno Cursor hooks recorded for each Cursor conversation (`~/.sno/cursor/conversations/`; a conversation with no record is kept without a project), each session's git `origin`, and installed `SKILL.md` files under `~/.claude/skills`, `~/.codex/skills`, `~/.hermes/skills` and `~/.openclaw/skills`; `HERMES_HOME` and `OPENCLAW_STATE_DIR` override the new homes. Accepted changes use those same installed roots. Locally redacted copies stay in `~/.sno/experience` (or `$REM_REFLECT_STORE`). Claude and Codex turns run `claude -p` and `codex exec` on your existing login in place, with your settings, hooks, plugins and MCP servers left out and no session saved; a Claude or Codex login is never copied, because a copied login that renews signs the original out. Hermes and OpenClaw use their own login and HOME. Their labeling and lesson calls are marked Station one-shots and limited to 280 seconds. For Cursor it copies `~/.config/cursor/auth.json` on Linux, or links the login keychains on macOS, into `<store>/.loop-home/cursor`, which Cursor runs use as their home so none of your Cursor hooks fire. Cursor labeling turns send the rendered session to your own Cursor account. Only `agent-native` or `rem-enhanced` at consent `full` uploads kept session text, tool-call targets/errors, project ids and complete installed skill bodies to Sno. Secret redaction is best effort. `off` or `metadata-only` uploads none of it. Installation selects `metadata-only` for `local-first`, `full` otherwise, without overwriting an existing choice; change it with `sno station consent off|metadata-only|full`.
 
 The program is TypeScript run directly by Node; it needs Node 22.6 or newer on PATH as
-`node`, the `sno` CLI from Sno Station (consent, settings and the cloud calls go through it) and the session's own Claude Code or Codex CLI. The `sno heartbeat`
+`node`, the `sno` CLI from Sno Station, the session's own Claude Code, Codex, Hermes, OpenClaw or Cursor (`cursor-agent`) CLI, and `python3` for Hermes database reads. The `sno heartbeat`
 command, when installed, can schedule the daily run. Without a scheduler the commands still work manually and
 `status` reports that the loop is not armed. If `node` is older, install a current Node and
 retry; nothing here downloads or bundles a runtime.
@@ -70,7 +70,10 @@ retry; nothing here downloads or bundles a runtime.
   only when promoted to all projects.
 - `sno rem-reflect recall --agent <kind>` — run by the harness session-start hook; prints, for each
   recallable lesson of the session's project plus user-wide lessons, its trigger and advice,
-  independent of agent kind, and one line naming how to read one in full. A lesson is recallable
+  independent of agent kind, and one line naming how to read one in full. With `--agent cursor` it reads Cursor's
+  hook input and answers in Cursor's form (`{"additional_context": …}`, or `{}`). The project is the git root of the
+  first workspace folder, so in a window with several folders all work is filed under the first one. Cursor's first
+  chat in a new window has no session start, so its first-prompt hook brings this index instead. A lesson is recallable
   when the owner accepted it, or when it is listed and its cloud verification accepted it; a
   rejected lesson never is.
 - `sno rem-reflect recall --agent <kind> --first-message` — run by the harness prompt hook on a
@@ -79,10 +82,10 @@ retry; nothing here downloads or bundles a runtime.
   and consent is full, and never blocks the prompt.
 - `sno rem-reflect lesson <lesson-id> --session <id> --agent <kind> --cwd <dir>` — print one recallable
   lesson in full.
-- `sno rem-reflect status` — print the last run's status and whether the daily job is armed; exits
+- `sno rem-reflect status` — print the last run's status, whether the daily job is armed, and the lesson counts; exits
   non-zero when the job is stale, failed, or not armed.
 - `sno rem-reflect install-hooks --print` — print the session-start and first-prompt hook entries for
-  the owner to install (the program never writes those files itself).
+  the owner to install, including Hermes's `pre_llm_call` shell hook; OpenClaw lessons come from the Sno memory plugin (the program never writes those files itself).
 
 ## How proposals are classified
 
@@ -95,7 +98,7 @@ and has a size cap.
 
 ## Owner actions
 
-Set these up once. The program never edits these files itself.
+Set these up once. The program never edits these files itself, except `~/.cursor/hooks.json` (below).
 
 - **Arm the daily run.** Register the once-a-day job with `sno heartbeat`:
 
@@ -105,7 +108,9 @@ Set these up once. The program never edits these files itself.
 
 - **Install the session-start and first-prompt hooks.** Run `sno rem-reflect install-hooks --print` and merge the
   Claude fragment into `~/.claude/settings.json` and the Codex fragment into `~/.codex/hooks.json`.
-  Codex runs its `SessionStart` hook only after you approve it once in an interactive session.
+  Codex runs its `SessionStart` hook only after approval; merge the Hermes fragment into `~/.hermes/config.yaml` (or `$HERMES_HOME/config.yaml`) and approve its shell hook. It returns JSON context only on `is_first_turn`; OpenClaw uses the Sno memory plugin.
+  For Cursor, `sno rem-reflect recall install` writes the two entries into `~/.cursor/hooks.json` itself; it replaces
+  its own earlier entries and keeps every other one.
 - **Allow the recall detail command.** Permit `sno rem-reflect lesson` in the harness so a session can
   read a listed lesson in full from the recall index.
 - **Check the Sno Station settings.** `sno setup` writes `~/.sno/settings.json` (or

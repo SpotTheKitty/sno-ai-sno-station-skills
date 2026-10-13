@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import {
-  calendar, commands, defaultConfig, isObject, loadConfig, messages, storePath,
+  calendar, commands, defaultConfig, isObject, loadConfig, messages, reflectionFiles, storePath,
   validateConfig, validateRoots,
 } from './config.ts';
 import { harvest } from './harvest.ts';
@@ -16,11 +16,13 @@ import type { Lock, State } from './store.ts';
 import { RealBackend, seedLoopHomes } from './backend.ts';
 import type { Backend } from './backend.ts';
 import { reflect } from './reflect.ts';
+import { lessonsFrom } from './lessons.ts';
 import { observe } from './observe.ts';
 import { flushCloudVerdicts } from './cloud.ts';
 import { buildReport } from './report.ts';
 import { verdictCommand } from './adopt.ts';
 import { firstMessageRecall, installHooksPrint, lessonDetail, recall } from './recall.ts';
+import { cursorRecall, installCursorHooks } from './cursor.ts';
 import type { Harness } from './identity.ts';
 import { readFileSync } from 'node:fs';
 
@@ -30,12 +32,13 @@ function held(lock: Lock): CommandResult {
   return { code: 0, lines: [`lock held by ${lock.command} ${lock.id} (pid ${lock.pid})`] };
 }
 
-// one SUCCESSFUL reflection per day. A run no-ops only when today already reached a
+// One committed SUCCESSFUL reflection per day. A run no-ops only when today already reached a
 // terminal success ('no_action' is a successful reflection that proposed nothing); a day whose only
 // run failed, timed out, or found no backend is not done, so a retry that day proceeds.
-function succeededToday(state: State, date: string): boolean {
-  const t = state.last_terminal;
-  return !!t && t.date === date && (t.status === 'success' || t.status === 'no_action');
+function succeededToday(store: string, date: string): string | undefined {
+  const text = readHead(store, 'state.json');
+  const t = text ? parseState(text).last_terminal : null;
+  return t && t.date === date && (t.status === 'success' || t.status === 'no_action') ? t.id : undefined;
 }
 
 export function run(store: string, now: Date = new Date(), user?: string,
@@ -55,7 +58,8 @@ export function run(store: string, now: Date = new Date(), user?: string,
   if (prior && processAlive(prior.pid)) return held(prior);
   let state = fresh ? emptyState() : readState(store);
   const cloudErrors = fresh ? [] : flushCloudVerdicts(store).errors;
-  if (succeededToday(state, start.date)) return { code: 0, lines: [`no-op: ${state.last_terminal!.id} already succeeded on ${start.date}`, ...cloudErrors] };
+  const succeeded = succeededToday(store, start.date);
+  if (succeeded) return { code: 0, lines: [`no-op: ${succeeded} already succeeded on ${start.date}`, ...cloudErrors] };
   privateDirectory(store);
   // Finish the bootstrap before recovery touches git. A first run killed mid-initialization can
   // leave a store with no repository, or one with a repository and no config.json — recovering
@@ -75,9 +79,10 @@ export function run(store: string, now: Date = new Date(), user?: string,
   // the day runs twice and the second run writes back a state it read before the first.
   if (existsSync(join(store, 'state.json'))) {
     state = readState(store);
-    if (succeededToday(state, start.date)) {
+    const succeeded = succeededToday(store, start.date);
+    if (succeeded) {
       releaseLock(store);
-      return { code: 0, lines: [`no-op: ${state.last_terminal!.id} already succeeded on ${start.date}`, ...cloudErrors] };
+      return { code: 0, lines: [`no-op: ${succeeded} already succeeded on ${start.date}`, ...cloudErrors] };
     }
   }
   const result = executeHarvest(store, config, state, start, now, userId, notice, backend, clock, started, trigger);
@@ -100,14 +105,14 @@ function executeHarvest(store: string, config: ReturnType<typeof defaultConfig>,
     initializeStore(store, config, state);
     atomicWrite(runLog, '');
     try {
+      if (backend instanceof RealBackend && existsSync(config.cursor_root)) seedLoopHomes(store, config, lines);
       const result = harvest(store, config, state, user, now);
       sessionsRead = result.traces.length;
       lines = result.log;
-      // Seed the isolated harness homes before the first model call; harvest spawns nothing.
-      seedLoopHomes(store, config, lines);
       const reflection = reflect(store, config, start.id, backend, lines, now);
-      state.last_terminal = { ...start, status: 'success' };
-      const statusLines = lines.filter(line => line.includes('labeler-') || line.includes('credential file missing'));
+      state.last_terminal = { ...start, status: reflection.failed ? 'no_backend' : 'success' };
+      if (reflection.failed) code = 1;
+      const statusLines = lines.filter(line => line.includes('labeler-'));
       const report = buildReport({ store, config, runId: start.id, notice,
         labelerLines: statusLines, harvested: result.traces.length,
         reflectionReport: reflection.report });
@@ -144,33 +149,55 @@ function listedHeartbeat(): string {
   } catch { return ''; }
 }
 
-export function status(store: string, now: Date = new Date(), heartbeat: string = listedHeartbeat()): CommandResult {
+// sno setup schedules the run with a systemd user timer (Linux) or a launchd agent (macOS) instead of a heartbeat.
+function setupTimerOn(): boolean {
+  try {
+    if (process.platform === 'darwin') {
+      execFileSync('launchctl', ['list', 'ai.sno.rem-reflect'], { timeout: 5000, stdio: 'ignore' });
+      return true;
+    }
+    return execFileSync('systemctl', ['--user', 'show', 'sno-rem-reflect.timer', '--property=ActiveState', '--value'], {
+      encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() === 'active';
+  } catch { return false; }
+}
+
+export function status(store: string, now: Date = new Date(), heartbeat: string = listedHeartbeat(),
+  timer: boolean = setupTimerOn()): CommandResult {
   const revision = headRevision(store);
   const stateText = readHead(store, 'state.json', revision);
   const configText = readHead(store, 'config.json', revision);
   const state = stateText ? parseState(stateText) : emptyState();
   const config = configText ? validateConfig(JSON.parse(configText)) : defaultConfig();
-  const lines: string[] = [];
+  const lines: string[] = ['Nightly review'];
   let code = 0;
   const terminal = state.last_terminal;
-  if (!terminal) { lines.push(messages.noTerminal); code = 1; }
+  if (!terminal) { lines.push('  Last run   never; start one now with: sno rem-reflect run'); code = 1; }
   else {
-    lines.push(`${terminal.id} ${terminal.status} ${terminal.date}`);
+    const bad = ['failed', 'timed_out', 'no_backend', 'died'].includes(terminal.status);
+    lines.push(`  Last run   ${terminal.date} · ${terminal.status.replace('_', ' ')} · run ${terminal.id}`);
     const today = calendar(now, config.time_zone).date;
     if ((Date.parse(today) - Date.parse(terminal.date)) / 86_400_000 > 2) {
-      lines.push('last terminal run is older than two calendar days'); code = 1;
+      lines.push('             ! more than two days ago; the daily run is not happening'); code = 1;
     }
-    if (['failed', 'timed_out', 'no_backend'].includes(terminal.status)) code = 1;
+    if (bad) { lines.push(`             ! see what went wrong in ${join(store, 'staging', terminal.id, 'run.log')}`); code = 1; }
   }
   const lock = readLock(store);
   if (lock) {
     const alive = processAlive(lock.pid);
-    lines.push(`${alive ? 'lock held by' : 'dead lock holder'} ${lock.command} ${lock.id}`);
+    lines.push(alive ? `  Running    ${lock.command} ${lock.id} (pid ${lock.pid})`
+      : `  ! ${lock.command} ${lock.id} stopped halfway (pid ${lock.pid} is gone); the next run cleans it up`);
     if (!alive) code = 1;
   }
-  const beat = heartbeatLine(heartbeat);
-  lines.push(beat ?? messages.noHeartbeat);
+  const beat = timer || heartbeatLine(heartbeat);
+  lines.push(beat ? '  Schedule   on, once a day in the background'
+    : '  Schedule   off; turn on with: sno heartbeat --interval 24h --max-hours 0 --label rem-reflect -- sno rem-reflect run --trigger timer');
   if (!beat) code = 1;
+  const lessons = lessonsFrom(readHead(store, reflectionFiles.lessons, revision) ?? '');
+  const count = (...wanted: string[]) => lessons.filter(lesson => wanted.includes(lesson.status)).length;
+  const waiting = count('candidate', 'under_review');
+  lines.push(`  Lessons    ${count('accepted')} accepted · ${waiting} waiting for your yes · ${count('rejected')} rejected`);
+  if (waiting) lines.push('             decide one with: sno rem-reflect accept <lesson id>  or  reject <lesson id>');
   return { code, lines };
 }
 
@@ -188,30 +215,44 @@ function recallCommand(rest: string[]): CommandResult {
   const firstMessage = rest.includes('--first-message');
   const { opts } = parseFlags(rest.filter(arg => arg !== '--first-message'));
   const agent = opts.agent as Harness;
-  if (agent !== 'claude-code' && agent !== 'codex') return { code: 2, lines: ['recall: --agent claude-code|codex is required'] };
+  if (rest[0] === 'install') return installCursorHooks();
+  if (!['claude-code', 'codex', 'hermes', 'openclaw', 'cursor'].includes(agent)) return { code: 2, lines: ['recall: --agent claude-code|codex|hermes|openclaw|cursor is required'] };
+  if (agent === 'cursor') {
+    let stdin = '';
+    try { stdin = readFileSync(0, 'utf8'); } catch { /* no stdin available */ }
+    return cursorRecall(storePath(), firstMessage, stdin, listedHeartbeat);
+  }
   let session: string | undefined = opts.session;
   let cwd: string | undefined = opts.cwd;
   let prompt: string | undefined;
+  let hermesHook = false;
   if (firstMessage || !session || !cwd) {
     // the SessionStart hook pipes the harness's JSON on stdin; both harnesses pass session_id and cwd
     try {
       const value: unknown = JSON.parse(readFileSync(0, 'utf8'));
       if (isObject(value)) {
+        hermesHook = agent === 'hermes' && value.hook_event_name === 'pre_llm_call';
+        const fields = isObject(value.extra) ? value.extra : value;
+        if (hermesHook && fields.is_first_turn !== true) return { code: 0, lines: [] };
+        // The Cursor IDE also runs Claude-format hooks, with its own input; the Cursor entries own Cursor.
+        if (agent === 'claude-code' && 'cursor_version' in value) return { code: 0, lines: [] };
         if (!session && typeof value.session_id === 'string') session = value.session_id;
         if (!cwd && typeof value.cwd === 'string') cwd = value.cwd;
         if (typeof value.prompt === 'string') prompt = value.prompt;
       }
     } catch { /* no stdin available */ }
   }
-  return firstMessage ? firstMessageRecall(storePath(), agent, { session_id: session, cwd, prompt })
-    : recall(storePath(), agent, { session_id: session, cwd }, new Date(), listedHeartbeat());
+  const result = firstMessage ? firstMessageRecall(storePath(), agent, { session_id: session, cwd, prompt })
+    : recall(storePath(), agent, { session_id: session, cwd }, new Date(), listedHeartbeat(), setupTimerOn());
+  if (hermesHook) return { ...result, lines: result.code === 0 ? [JSON.stringify({ context: result.lines.join('\n') })] : [] };
+  return result;
 }
 
 function lessonCommand(rest: string[]): CommandResult {
   const { positional, opts } = parseFlags(rest);
   if (!positional.length) return { code: 2, lines: ['lesson: a lesson id is required'] };
   const agent = opts.agent as Harness | undefined;
-  if (agent && agent !== 'claude-code' && agent !== 'codex') return { code: 2, lines: ['lesson: --agent must be claude-code or codex'] };
+  if (agent && !['claude-code', 'codex', 'hermes', 'openclaw', 'cursor'].includes(agent)) return { code: 2, lines: ['lesson: --agent must be claude-code, codex, hermes, openclaw or cursor'] };
   return lessonDetail(storePath(), positional[0], { session: opts.session, cwd: opts.cwd, agent }, new Date());
 }
 

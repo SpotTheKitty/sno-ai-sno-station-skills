@@ -1,25 +1,24 @@
 #!/usr/bin/env bash
 # rotate-agent-watch — the heartbeat hook for quota-triggered failover between agent
-# harness vendors (codex <-> claude, either direction). One run is one tick: it reads the
-# working vendor's remaining subscription, applies the threshold, checks the receiver, and
-# records the trigger in a state file so it fires once. Every decision here is code; the
-# watching agent only relays the line this prints. Exit 0 on every verdict; 2 on bad usage.
+# agents. One run reads the sender and picks ordered candidates only at a crossing.
+# The watchman records switched after confirmation, rotated only after a real handoff.
+# Exit 0 on every verdict; 2 on bad usage.
 set -Eeuo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-usage: rotate-agent-watch --from codex|claude --to codex|claude --state <file> --cwd <checkout>
+usage: rotate-agent-watch --from claude-code|codex|cursor|hermes|openclaw --seat <address> --state <file> --cwd <checkout>
                       [--threshold-pct <N>] [--quota-cmd <cmd>]
-prints one line: DONE | HOLD | LATE | ROTATE | COMPLETE ...
+prints one line: DONE | HOLD | ROTATE | COMPLETE ...
 USAGE
   exit 2
 }
 
-FROM="" TO="" STATE="" CWD="" THRESHOLD=2 QUOTA_CMD=(sno subscription-quota-check)
+FROM="" SEAT="" STATE="" CWD="" THRESHOLD=2 QUOTA_CMD=(sno subscription-quota-check)
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from) FROM="${2:-}"; shift 2 ;;
-    --to) TO="${2:-}"; shift 2 ;;
+    --seat) [[ -n "${2:-}" ]] || usage; SEAT="$2"; shift 2 ;;
     --state) STATE="${2:-}"; shift 2 ;;
     --cwd) [[ -n "${2:-}" ]] || usage; CWD="$2"; shift 2 ;;
     --threshold-pct) THRESHOLD="${2:-}"; shift 2 ;;
@@ -28,7 +27,7 @@ while [[ $# -gt 0 ]]; do
     *) printf 'rotate-agent-watch: unknown option %s\n' "$1" >&2; usage ;;
   esac
 done
-[[ "$FROM" =~ ^(codex|claude)$ && "$TO" =~ ^(codex|claude)$ && "$FROM" != "$TO" ]] || usage
+[[ "$FROM" =~ ^(claude-code|codex|cursor|hermes|openclaw)$ && -n "$SEAT" ]] || usage
 [[ -n "$STATE" && -n "$CWD" && "$THRESHOLD" =~ ^[0-9]+$ ]] || usage
 CWD="$(cd -- "$CWD" && pwd -P)" || exit 2
 command -v jq >/dev/null || { printf 'rotate-agent-watch: jq is required and missing\n' >&2; exit 2; }
@@ -42,7 +41,7 @@ send_event() {
   fi
   run=(sno observe append "$event" "$@")
   # macOS ships no `timeout`; there the send is unbounded (install coreutils to bound it).
-  ! command -v timeout >/dev/null 2>&1 || run=(timeout 60 "${run[@]}")
+  ! command -v timeout >/dev/null 2>&1 || run=(timeout 30 "${run[@]}")
   if "${run[@]}" >/dev/null 2>&1; then
     :
   else
@@ -55,7 +54,6 @@ send_event() {
 send_quota() {
   local harness="$1" used="$2" reset="$3" remaining last=0 throttle now
   [[ "$used" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 0
-  [[ "$harness" != claude ]] || harness=claude-code
   remaining="$(jq -n --arg used "$used" '[0, 100 - ($used | tonumber)] | max | select(. < 10)')"
   [[ -n "$remaining" ]] || return 0
   if [[ ! "$reset" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
@@ -75,12 +73,13 @@ send_quota() {
   return 0
 }
 
-# The quota command exits non-zero for wait/unknown; the JSON verdict is the answer, not the status.
+# Nonzero quota status can still carry the wait verdict.
 read_quota() {
-  local vendor="$1" out
-  out="$("${QUOTA_CMD[@]}" --vendor "$vendor" --json --quiet 2>/dev/null || true)"
-  jq -r '(.vendors[0].verdict // "unknown"), (.vendors[0].tightest_window.used_pct // "null"),
-         (.vendors[0].tightest_window.seconds_to_reset // "null")' <<<"$out" 2>/dev/null \
+  local out
+  out="$(timeout 60 "${QUOTA_CMD[@]}" --agent "$FROM" --seat "$SEAT" --json)" ||
+    printf 'rotate-agent-watch: sender read failed agent=%s seat=%s; inspecting returned verdict\n' "$FROM" "$SEAT" >&2
+  jq -r '(.vendor.verdict // "unknown"), ((.vendor.tightest_window.used_pct // "null") | if type == "number" then floor else . end),
+         (.vendor.tightest_window.seconds_to_reset // "null")' <<<"$out" 2>/dev/null \
     || printf 'unknown\nnull\nnull\n'
 }
 
@@ -94,7 +93,7 @@ if [[ -n "$ROTATED" ]] && grep -q '^completed ' -- "$STATE"; then
 fi
 
 { read -r FROM_VERDICT; read -r USED; read -r RESET; } < <(read_quota "$FROM")
-if ! COMMITS="$(git -C "$CWD" rev-list --count HEAD 2>&1)"; then
+if ! COMMITS="$(timeout 15 git -C "$CWD" rev-list --count HEAD 2>&1)"; then
   printf 'rotate-agent-watch: git rev-list failed in %s: %s\n' "$CWD" "${COMMITS//$'\n'/; }" >&2
   COMMITS=""
 fi
@@ -105,7 +104,8 @@ if [[ -n "$ROTATED" ]]; then
   COMMITS_BEFORE="${COMMITS_BEFORE#commits=}"
   if [[ "$COMMITS" =~ ^[0-9]+$ && "$COMMITS_BEFORE" =~ ^[0-9]+$ ]] && (( COMMITS > COMMITS_BEFORE )); then
     SECONDS_TOTAL=$(( $(date -u +%s) - $(jq -n --arg t "$ROTATED_STAMP" '$t | fromdateiso8601') ))
-    TO_HARNESS="$TO"; [[ "$TO_HARNESS" != claude ]] || TO_HARNESS=claude-code
+    TO="$(sed -n 's/.* to=\([^ ]*\).*/\1/p' <<<"$ROTATED")"
+    TO_HARNESS="$TO"
     SENDER_REMAINING="${SENDER_REMAINING#remaining=}"
     send_event handoff.complete "--agent=$TO_HARNESS" "--project=$CWD" \
       "--total_seconds=$SECONDS_TOTAL" "--sender_remaining_pct=${SENDER_REMAINING%\%}" \
@@ -117,33 +117,31 @@ if [[ -n "$ROTATED" ]]; then
   fi
   exit 0
 fi
+REMAINING=0
+if [[ "$USED" =~ ^[0-9]+$ ]]; then
+  REMAINING=$((100 - USED))
+  (( REMAINING >= 0 )) || REMAINING=0
+fi
 case "$FROM_VERDICT" in
-  wait|owner_action) printf 'LATE blocked verdict=%s reset_in=%ss\n' "$FROM_VERDICT" "$RESET"; exit 0 ;;
-  go|short_only) ;;
+  wait|owner_action) ;; # Refusal is a crossing, even without a numeric window.
+  go|short_only)
+    [[ "$USED" =~ ^[0-9]+$ ]] || { printf 'HOLD unreadable verdict=%s used_pct=%s\n' "$FROM_VERDICT" "$USED"; exit 0; }
+    if (( REMAINING > THRESHOLD )); then
+      printf 'HOLD from=%s remaining=%s%% threshold=%s%%\n' "$FROM" "$REMAINING" "$THRESHOLD"
+      exit 0
+    fi ;;
   *) printf 'HOLD unreadable verdict=%s\n' "$FROM_VERDICT"; exit 0 ;;
 esac
-[[ "$USED" =~ ^[0-9]+$ ]] || { printf 'HOLD unreadable verdict=%s used_pct=%s\n' "$FROM_VERDICT" "$USED"; exit 0; }
-REMAINING=$((100 - USED))
-(( REMAINING >= 0 )) || REMAINING=0
-if (( REMAINING > THRESHOLD )); then
-  printf 'HOLD from=%s remaining=%s%% threshold=%s%%\n' "$FROM" "$REMAINING" "$THRESHOLD"
+pick="$(timeout 120 "${QUOTA_CMD[@]}" --pick handoff --from "$FROM" --seat "$SEAT" --json)" ||
+  printf 'rotate-agent-watch: pick failed agent=%s seat=%s; inspecting returned candidates\n' "$FROM" "$SEAT" >&2
+candidates="$(jq -ce 'select(.ok == true) | .candidates | select(length > 0)' <<<"$pick" 2>/dev/null)" || {
+  printf 'HOLD no-candidate from=%s seat=%s\n' "$FROM" "$SEAT"
   exit 0
-fi
-
-{ read -r TO_VERDICT; read -r TO_USED; read -r TO_RESET; } < <(read_quota "$TO")
-send_quota "$TO" "$TO_USED" "$TO_RESET"
-case "$TO_VERDICT" in
-  go|short_only) ;;
-  *) printf 'HOLD receiver-%s from=%s remaining=%s%%\n' "$TO_VERDICT" "$FROM" "$REMAINING"; exit 0 ;;
-esac
-
-mkdir -p -- "$(dirname -- "$STATE")"
-STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-printf 'rotated %s from=%s to=%s remaining=%s%% commits=%s\n' "$STAMP" "$FROM" "$TO" "$REMAINING" "$COMMITS" > "$STATE.tmp"
-mv -f -- "$STATE.tmp" "$STATE"
-printf 'ROTATE from=%s to=%s remaining=%s%% reset_in=%ss\n' "$FROM" "$TO" "$REMAINING" "$RESET"
-FROM_HARNESS="$FROM"; [[ "$FROM_HARNESS" != claude ]] || FROM_HARNESS=claude-code
-TO_HARNESS="$TO"; [[ "$TO_HARNESS" != claude ]] || TO_HARNESS=claude-code
-send_event handoff.trigger "--agent=$FROM_HARNESS" "--project=$CWD" \
-  "--from_harness=$FROM_HARNESS" "--to_harness=$TO_HARNESS" \
+}
+sender="$(jq -c '.from' <<<"$pick")"
+printf 'ROTATE from=%s seat=%s remaining=%s%% verdict=%s reset_in=%ss commits=%s sender=%s candidates=%s\n' \
+  "$FROM" "$SEAT" "$REMAINING" "$FROM_VERDICT" "$RESET" "$COMMITS" "$sender" "$candidates"
+TO="$(jq -r '.[0].agent' <<<"$candidates")"
+send_event handoff.trigger "--agent=$FROM" "--project=$CWD" \
+  "--from_harness=$FROM" "--to_harness=$TO" \
   "--remaining_pct=$REMAINING" "--threshold_pct=$THRESHOLD"

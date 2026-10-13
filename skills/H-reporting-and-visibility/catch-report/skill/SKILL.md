@@ -31,7 +31,10 @@ line, logged in.
    numbers with its biggest catches quoted by title, the agents' own catches in their own words, and how to read
    the numbers. Tell the user first that the self-check part sends short excerpts of their conversations to their
    own claude or codex (100 by default, about four minutes, it costs tokens); `--limit N` changes that, and
-   `--agent claude` or `--agent codex` narrows it.
+   `--agent claude` or `--agent codex` narrows it. `--agent cursor` reads Cursor's conversations
+   (`~/.cursor/projects/*/agent-transcripts`) instead and has `cursor-agent` judge them; Cursor transcripts hold no
+   tool output, so only its spoken admissions count there, and no per-message times, so a Cursor conversation updated in
+   the period counts with its whole history.
 2. Hand the page to the user as printed, headline first, in English: do not translate it or re-word it. Keep every number and the plausible range exactly as
    printed, keep the quotes, and keep the "How to read this" notes. Do not round up, do not add a claim the page
    does not make, and do not say the findings are "real problems" or whose work was wrong: the records hold no
@@ -41,7 +44,7 @@ line, logged in.
    out loud within ten steps of a failure or in a known admission phrase (English and Chinese); quiet fixes are
    not seen.
 4. For the details behind a number: `sno catch-report run` prints the review records (reviews started, finished,
-   refused and never finished; per reviewer model the high and medium findings, `fix-now` and `debt`; verdicts;
+   refused and never finished; per reviewer model the high and medium findings and `fix-now`; verdicts;
    the five reviews with the most `fix-now`; findings the owner has ruled on), and `sno catch-report self --list`
    prints each self-check moment with the model's verdict. Both take `--stats FILE` and `--findings FILE` for
    records kept elsewhere. The records are `~/.local/state/codex-review-stats.jsonl` and

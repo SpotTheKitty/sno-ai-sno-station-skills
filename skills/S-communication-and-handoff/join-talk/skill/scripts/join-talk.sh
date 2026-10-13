@@ -11,7 +11,7 @@
 #   --name     display name; default <repo>
 # Stdout: exactly one line, `joined <address>`. Everything else is stderr.
 # Exit:  0 joined (or already joined from this terminal) · 2 usage · 3 no terminal
-#        identity (not under tmux or Orca) · 4 `sno`, `jq` or `flock` is missing · the runtime's own status
+#        identity (not under tmux, Orca or a Cursor IDE chat) · 4 `sno`, `jq` or `flock` is missing · the runtime's own status
 #        when init or register refuse.
 set -Eeuo pipefail
 
@@ -59,8 +59,13 @@ elif [[ -z "${TMUX:-}" && -n "${ORCA_TAB_ID:-}" ]]; then
   reach_channel='orca'
   reach_handle="${ORCA_TERMINAL_HANDLE:-}"
   [[ -n "$reach_handle" ]] || die 3 'under Orca but ORCA_TERMINAL_HANDLE is empty: Reach cannot address this terminal'
+elif [[ -n "${CURSOR_CONVERSATION_ID:-}" && -z "${CURSOR_INVOKED_AS:-}" ]]; then
+  # A Cursor IDE chat has no terminal; Reach delivers to it through the chat's conversation id.
+  identity="cursor-ide:${CURSOR_CONVERSATION_ID}"
+  reach_channel='cursor-ide'
+  reach_handle="$CURSOR_CONVERSATION_ID"
 else
-  die 3 'no terminal to be reached at: this shell is under neither tmux nor Orca'
+  die 3 'no terminal to be reached at: this shell is under neither tmux, Orca nor a Cursor IDE chat'
 fi
 
 command -v sno >/dev/null || die 4 'sno is missing: Reach registration needs it (installed by sno setup)'

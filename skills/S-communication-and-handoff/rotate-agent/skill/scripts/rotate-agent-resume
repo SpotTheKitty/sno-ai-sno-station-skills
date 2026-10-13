@@ -12,17 +12,19 @@ set -Eeuo pipefail
 usage() {
   local status="${1:-2}"
   cat >&"$((status == 0 ? 1 : 2))" <<'USAGE'
-usage: sno rotate-agent-resume --to codex|claude --cwd <checkout> --checkpoint <progress-record>
+usage: sno rotate-agent-resume --to claude-code|codex|cursor|hermes|openclaw [--model <M>] [--provider <P>] --cwd <checkout> --checkpoint <progress-record>
                                --work <label> [--report-to <seat-address>] [--checkpoint-cmd <cmd>]
 prints one line per step: OK <step> | FAIL <step>: <what> -> <what to do> | RESUMED seat=<address> verify=MATCH|DRIFT
 USAGE
   exit "$status"
 }
 
-TO="" CWD="" CHECKPOINT="" WORK="" REPORT_TO="" CKPT_CMD=(sno handoff-checkpoint)
+MODEL="" PROVIDER="" TO="" CWD="" CHECKPOINT="" WORK="" REPORT_TO="" CKPT_CMD=(sno handoff-checkpoint)
 (( $# > 0 )) || usage 0
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --model) MODEL="${2:-}"; shift 2 ;;
+    --provider) PROVIDER="${2:-}"; shift 2 ;;
     --to) TO="${2:-}"; shift 2 ;;
     --cwd) CWD="${2:-}"; shift 2 ;;
     --checkpoint) CHECKPOINT="${2:-}"; shift 2 ;;
@@ -33,14 +35,25 @@ while [[ $# -gt 0 ]]; do
     *) printf 'rotate-agent-resume: unknown option %s\n' "$1" >&2; usage ;;
   esac
 done
-[[ "$TO" =~ ^(codex|claude)$ && "$WORK" =~ ^[a-z0-9][a-z0-9-]*$ && -n "$CWD" && -n "$CHECKPOINT" ]] || usage
+[[ "$TO" =~ ^(claude-code|codex|cursor|hermes|openclaw)$ && "$WORK" =~ ^[a-z0-9][a-z0-9-]*$ && -n "$CWD" && -n "$CHECKPOINT" ]] || usage
+[[ "$TO" != hermes && "$TO" != openclaw || ( -n "$MODEL" && -n "$PROVIDER" ) ]] || usage
+KIND="$TO"
+case "$TO" in claude-code) KIND=claude ;; cursor) KIND=cursor-agent ;; esac
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+DEADLINE=$((SECONDS + 295))
+bounded() {
+  local cap="$1" left=$((DEADLINE - SECONDS)); shift
+  (( left > 0 )) || return 1
+  (( left >= cap )) || cap="$left"
+  timeout "$cap" "$@"
+}
 # The receiver starts in $CWD, so a relative path would mean something else there: use absolute paths throughout.
 CWD="$(realpath -m -- "$CWD")"
 CHECKPOINT="$(realpath -m -- "$CHECKPOINT")"
 
-HOST="$(hostname -s | tr '[:upper:]' '[:lower:]')"
+HOST="$(hostname | tr '[:upper:]' '[:lower:]')"
 readonly SEAT="resume.$WORK@$HOST"
-readonly ROOT="${SNO_REACH_ROOT:-$HOME/.local/state/sno-reach}"
+readonly ROOT="${SNO_REACH_STATE_ROOT:-${SNO_REACH_ROOT:-$HOME/.local/state/sno-reach}}"
 readonly LOCK_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/rotate-agent"
 readonly LOCK="$LOCK_DIR/$WORK.resume"
 readonly STARTUP_SECONDS=90
@@ -87,20 +100,23 @@ LOCK_OWNED=1
 ok once
 
 # 3. The receiver: a seat on a tmux window in the checkout, past its startup turn.
-timeout 30 sno reach init --as "$SEAT" --name resume >/dev/null 2>&1 || fail init "sno reach init --as $SEAT refused" "run it by hand and read its message"
-spawned="$(timeout 120 sno reach spawn "$TO" --as "$SEAT" --cwd "$CWD" --window 2>&1)" ||
+bounded 30 sno reach init --as "$SEAT" --name resume >/dev/null 2>&1 || fail init "sno reach init --as $SEAT refused" "run it by hand and read its message"
+spawn=(sno reach spawn "$KIND" --as "$SEAT" --cwd "$CWD" --window)
+[[ -z "$MODEL" ]] || spawn+=(--model "$MODEL")
+[[ -z "$PROVIDER" ]] || spawn+=(--provider "$PROVIDER")
+spawned="$(bounded 150 "${spawn[@]}" 2>&1)" ||
   fail spawn "sno reach spawn $TO --window refused: ${spawned##*$'\n'}" "fix what it names, then rerun"
 FAIL_KEEP_LOCK=1
 sed -i 's/state=starting/state=started/' "$LOCK"
 pane="$(jq -r '.identity.value' "$ROOT/$SEAT/reachable.json" 2>/dev/null || true)"
-sno reach watch "$SEAT" --idle 10 --timeout "$STARTUP_SECONDS" >/dev/null 2>&1 ||
+bounded "$STARTUP_SECONDS" sno reach watch "$SEAT" --idle 10 --timeout "$STARTUP_SECONDS" >/dev/null 2>&1 ||
   fail start "$TO kept printing for ${STARTUP_SECONDS}s after spawn" "open $TO in $CWD by hand and see what it is doing; the seat $SEAT exists"
 if [[ -n "$pane" ]] && tmux capture-pane -p -t "$pane" 2>/dev/null | grep -qi 'trust'; then
   fail trust "$TO stopped at its trust prompt in $CWD" "open $TO once in $CWD by hand, accept the prompt, then read the seat: sno reach watch $SEAT"
 fi
 # A receiver can be quiet for ten seconds while it still loads its model; text typed then is lost.
 if [[ -n "$pane" ]]; then
-  for _ in $(seq 30); do tmux capture-pane -p -t "$pane" 2>/dev/null | grep -qi 'loading' || break; sleep 2; done
+  for _ in $(seq 30); do tmux capture-pane -p -t "$pane" 2>/dev/null | grep -qi 'loading' || break; bounded 3 sleep 2 || break; done
 fi
 ok receiver
 
@@ -113,23 +129,54 @@ Progress record: $CHECKPOINT
 2. The record was just compared with the checkout. The result was:
 $verify_out
    If it shows DRIFT, the previous agent worked after its last checkpoint: read those commits and files first (git log, git diff), decide what they finished, and add that to Done before you continue.
-3. Print one line, on its own: RESUME_ACK $nonce
-4. Continue from Next in this checkout. After every finished task run: ${CKPT_CMD[*]} $CHECKPOINT   and update Done and Next in the record.
+3. Print one line, on its own: RESUME_ACK $nonce. Remain paused, make no task edits until RESUME_RELEASE $nonce.
+4. After that release, continue from Next in this checkout. After every finished task run: ${CKPT_CMD[*]} $CHECKPOINT   and update Done and Next in the record.
 5. When every task is done print DONE_$WORK on its own line. If a task needs the owner, print BLOCKED_$WORK <reason> on its own line instead; never print DONE_$WORK while a task waits on the owner."
 [[ -z "$REPORT_TO" ]] || prompt+=$'\n'"Report the final result to $REPORT_TO."
 # Codex takes the Enter that follows a long pasted prompt as part of the paste, so the prompt can sit unsent
 # in its input box. While the call waits, press Enter every 5 seconds; on an empty or busy box it does nothing.
-timeout 330 sno reach call "$SEAT" "$prompt" --expect "RESUME_ACK $nonce" --timeout 300 >/dev/null 2>&1 &
+call_limit=$((DEADLINE - SECONDS - 30))
+(( call_limit <= 280 )) || call_limit=280
+(( call_limit > 0 )) || fail acknowledge "operation deadline reached before RESUME_ACK" "try the next candidate"
+bounded "$call_limit" sno reach call "$SEAT" "$prompt" --expect "RESUME_ACK $nonce" --timeout "$call_limit" >"$LOCK.answer" 2>"$LOCK.error" &
 call_pid=$!
 if [[ "$TO" == codex && -n "$pane" ]]; then
-  for _ in $(seq 60); do
+  while kill -0 "$call_pid" 2>/dev/null && (( SECONDS < DEADLINE )); do
     sleep 5
     kill -0 "$call_pid" 2>/dev/null || break
-    tmux send-keys -t "$pane" Enter 2>/dev/null || true
+    bounded 5 tmux send-keys -t "$pane" Enter 2>/dev/null || true
   done
 fi
-wait "$call_pid" ||
-  fail acknowledge "$TO did not print RESUME_ACK within 300s" "read what it is doing: sno reach watch $SEAT; do not start a second receiver for '$WORK'"
+if ! wait "$call_pid"; then
+  cat "$LOCK.error" >&2
+  printf 'rotate-agent-resume: operation=acknowledge seat=%s command=call error=no RESUME_ACK; receiver remains paused\n' "$SEAT" >&2
+  FAIL_KEEP_LOCK=0
+  fail acknowledge "$TO did not print RESUME_ACK" "try the next candidate; inspect the paused seat $SEAT"
+fi
+if [[ "$TO" == hermes || "$TO" == openclaw ]]; then
+  receipt="$(jq -er 'select(.verified == true) | .deliveryReceipt | select(type == "string" and length > 0)' "$LOCK.answer")" || receipt=''
+  actual_provider=''
+  if [[ -n "$receipt" ]]; then
+    actual_provider="$(bounded 20 "$HERE/rotate-agent-answer-provider" --agent "$TO" --seat "$SEAT" --receipt "$receipt")" || actual_provider=''
+  fi
+  if [[ -z "$actual_provider" || "$actual_provider" != "$PROVIDER" ]]; then
+    printf 'rotate-agent-resume: operation=acknowledge seat=%s command=call error=wrong-or-unknown-provider expected=%s actual=%s; receiver remains paused\n' "$SEAT" "$PROVIDER" "${actual_provider:-unknown}" >&2
+    FAIL_KEEP_LOCK=0
+    fail acknowledge "receiver provider was ${actual_provider:-unknown}, expected $PROVIDER" "try the next candidate; inspect the paused seat $SEAT"
+  fi
+elif [[ "$TO" == cursor ]]; then
+  current="$(bounded 20 sno subscription-quota-check --agent cursor --seat "$SEAT" --json)" || current='{}'
+  if [[ "$(jq -r '.model // empty' <<<"$current")" != "$MODEL" ||
+        ( -n "$PROVIDER" && "$(jq -r '.provider // empty' <<<"$current")" != "$PROVIDER" ) ]]; then
+    FAIL_KEEP_LOCK=0
+    fail acknowledge "Cursor did not answer on $MODEL" "try the next candidate"
+  fi
+fi
+release_limit=$((DEADLINE - SECONDS)); (( release_limit <= 280 )) || release_limit=280
+(( release_limit > 0 )) || fail release "deadline reached; acknowledgement verified but receiver paused" "inspect $SEAT before any retry"
+bounded "$release_limit" sno reach call "$SEAT" "RESUME_RELEASE $nonce. Print RESUME_RELEASED $nonce, then continue the authorized task from the progress record." --expect "RESUME_RELEASED $nonce" --timeout "$release_limit" >/dev/null ||
+  fail release "release receipt missing; the receiver may own the task" "inspect $SEAT; do not start a second receiver"
+rm -f -- "$LOCK.answer" "$LOCK.error"
 sed -i "s/state=started/state=resumed verify=$verify/" "$LOCK"
 ok acknowledge
 printf 'RESUMED seat=%s verify=%s\n' "$SEAT" "$verify"

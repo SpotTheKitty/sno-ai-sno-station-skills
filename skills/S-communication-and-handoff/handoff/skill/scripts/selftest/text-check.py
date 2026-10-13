@@ -186,7 +186,7 @@ def check():
             assert template, f"missing receiver template: {heading}"
             require(r"(?:Recheck|Check) the digest and card identity", template[1], f"{heading} verifies release identity")
             require(r"Before any task write,.*?HANDOFF_RELEASED.*?nonce.*?standalone line.*?then (?:continue|perform)", template[1], f"{heading} emits receipt before writes")
-        require(r"at most 300 seconds.*?at most 60 checks, five seconds apart", body, "bounded observation")
+        require(r"at most 280 seconds.*?at most 60 checks, five seconds apart", body, "bounded observation")
         for status, action in {0: "inspect", 3: "repair", 4: "inspect", 5: "verify"}.items():
             require(rf"(?:call exit|Exit) {status}\b(?:(?!Exit [0345]).)*?{action}", body, f"call {status} next action")
         print(f"handoff text: {len(steps)} ordered steps, the three entry shapes and {invocations} invocations checked")

@@ -79,10 +79,12 @@ function appendUsage(store: string, row: Record<string, unknown>): void {
 export interface RecallInput { session_id?: string; cwd?: string; prompt?: string }
 // the index command. Reads at HEAD, never takes the lock, prints the scoped index
 // with the not-armed and pending-verdict prefixes, and records one `shown` line.
-export function recall(store: string, agent: Harness, input: RecallInput, now: Date = new Date(), heartbeat: string = ''): CommandResult {
+export function recall(store: string, agent: Harness, input: RecallInput, now: Date = new Date(), heartbeat: string = '',
+  timer: boolean = false): CommandResult {
   if (!input.session_id) return { code: 1, lines: [message('recallMissing', { field: 'session_id' })] };
   if (!input.cwd) return { code: 1, lines: [message('recallMissing', { field: 'cwd' })] };
-  if (!existsSync(store)) return { code: 1, lines: ['no store'] };
+  // Before the first nightly run there is nothing to recall; a failing session-start hook would only show an error.
+  if (!existsSync(store)) return { code: 0, lines: [] };
   const config = loadConfig(store);
   const project = projectId(input.cwd, gitRemote(input.cwd), config.project_names);
   const revision = headRevision(store);
@@ -91,7 +93,7 @@ export function recall(store: string, agent: Harness, input: RecallInput, now: D
   const index = scoped.map(lesson => message('recallIndexLine', { id: lesson.lesson_id, headline: lesson.situation.trigger,
     advice: lesson.advice, scope: lesson.applies_to }));
   const prefix: string[] = [];
-  if (!armed(heartbeat)) {
+  if (!timer && !armed(heartbeat)) {
     const stateText = readHead(store, 'state.json', revision);
     const date = stateText ? parseState(stateText).last_terminal?.date ?? '' : '';
     prefix.push(message('notArmed', { date }));
@@ -105,8 +107,9 @@ export function recall(store: string, agent: Harness, input: RecallInput, now: D
     appendUsage(store, { type: 'shown', session_id: input.session_id, cwd: input.cwd, project_id: project,
       agent_id: agent, lesson_ids: scoped.map(lesson => lesson.lesson_id), time: now.toISOString() });
   } catch (error) { stderr.push(message('usageAppendFailed', { error: String(error) })); }
-  return { code: 0, lines: [...prefix, message('recallHeading'), ...index,
-    message('recallInstruction', { session: input.session_id, agent, cwd: input.cwd })], stderr };
+  // With no lesson for this project the heading and instruction would only add noise to every session start.
+  return { code: 0, lines: [...prefix, ...(index.length ? [message('recallHeading'), ...index,
+    message('recallInstruction', { session: input.session_id, agent, cwd: input.cwd })] : [])], stderr };
 }
 
 export function firstMessageRecall(store: string, agent: Harness, input: RecallInput, now: Date = new Date()): CommandResult {
@@ -183,20 +186,26 @@ export function lessonDetail(store: string, lessonId: string, input: LessonInput
 }
 
 // Print the SessionStart and UserPromptSubmit hook entries the owner installs by hand. The program never writes
-// ~/.claude/settings.json or ~/.codex/hooks.json itself.
+// ~/.claude/settings.json, ~/.codex/hooks.json or ~/.hermes/config.yaml itself.
 export function installHooksPrint(): CommandResult {
-  const claude = { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'sno rem-reflect recall --agent claude-code' }] }],
-    UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'sno rem-reflect recall --agent claude-code --first-message' }] }] } };
+  // sno passes its own absolute path; a hook's PATH often lacks ~/.local/bin, where a bare `sno` is not found.
+  const executable = process.env.SNO_EXECUTABLE;
+  const sno = executable ? `'${executable.replaceAll("'", "'\\''")}'` : 'sno';
+  const claude = { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${sno} rem-reflect recall --agent claude-code` }] }],
+    UserPromptSubmit: [{ hooks: [{ type: 'command', command: `${sno} rem-reflect recall --agent claude-code --first-message` }] }] } };
   // Codex reads the same nested `hooks: [{ type: command, command: <shell string> }]` shape as Claude
   // (a flat `{command: [argv]}` entry is not run; the nested command string
   // fires and receives the session JSON on stdin). Its SessionStart hook runs only after the owner
   // approves it once in an interactive session (hook trust).
-  const codex = { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'sno rem-reflect recall --agent codex' }] }],
-    UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'sno rem-reflect recall --agent codex --first-message' }] }] } };
+  const codex = { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${sno} rem-reflect recall --agent codex` }] }],
+    UserPromptSubmit: [{ hooks: [{ type: 'command', command: `${sno} rem-reflect recall --agent codex --first-message` }] }] } };
   return { code: 0, lines: [
     '# ~/.claude/settings.json — merge these hooks:',
     JSON.stringify(claude, null, 2),
     '# ~/.codex/hooks.json — merge these hooks (Codex runs them only after you approve them once in an interactive session):',
     JSON.stringify(codex, null, 2),
+    '# ~/.hermes/config.yaml — merge this shell hook; recall returns {"context": ...} only on is_first_turn:',
+    'hooks:\n  pre_llm_call:\n    - command: sno rem-reflect recall --agent hermes',
+    '# OpenClaw lessons come from the Sno memory plugin; no shell hook to install.',
   ] };
 }

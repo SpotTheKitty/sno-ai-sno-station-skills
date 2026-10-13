@@ -14,7 +14,7 @@ if ! output="$(run_journey)" || ! grep -q 'JOURNEY OK isolated' <<<"$output"; th
   exit 1
 fi
 
-if output="$(REM_DROP_SPAWN_ENV=1 run_journey 2>&1)"; then
+if output="$(REM_DROP_ISOLATION=1 run_journey 2>&1)"; then
   printf 'FAIL: the planted isolation loss did not make the ordinary journey RED\n' >&2
   exit 1
 fi

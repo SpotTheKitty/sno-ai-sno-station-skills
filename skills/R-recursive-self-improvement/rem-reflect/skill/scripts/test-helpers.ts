@@ -110,6 +110,10 @@ export function makeConfig(over: Partial<Config> & { claude_root: string; codex_
   return {
     claude_home: over.claude_home ?? tmp('claude-home'),
     codex_home: over.codex_home ?? tmp('codex-home'),
+    hermes_home: join(tmp('hermes-home'), '.hermes'),
+    openclaw_home: join(tmp('openclaw-home'), '.openclaw'),
+    // Absent by default, as on a machine without Cursor.
+    cursor_root: join(tmp('cursor-home'), '.cursor', 'projects'),
     project_names: over.project_names ?? {},
     time_zone: over.time_zone ?? 'UTC',
     ...over,

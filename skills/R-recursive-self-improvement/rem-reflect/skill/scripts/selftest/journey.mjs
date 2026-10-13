@@ -1,5 +1,5 @@
 // Two-day fixture through the real local backend and the recording sno CLI.
-// REM_DROP_SPAWN_ENV=1 plants an isolation failure on this test backend instance only.
+// REM_DROP_ISOLATION=1 plants an isolation failure on this test backend instance only.
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -23,7 +23,7 @@ const SRC_MT = new Date('2026-09-14T00:00:00Z').getTime(); // fixture sessions: 
 const SELF_MT = new Date('2026-09-15T06:00:00Z').getTime(); // loop-own turns: between DAY1 and DAY2's quiet window
 
 // A fixture HOME whose .claude/projects and .codex/sessions ARE the harvest roots, so that when the
-// isolation env is dropped the shim's fallback ($HOME/.claude, $HOME/.codex) lands in the harvest root.
+// isolation flags are dropped the shim saves its turn in the harvest root.
 const home = tmp('home');
 const claudeHome = join(home, '.claude'), codexHome = join(home, '.codex');
 mkdirSync(claudeHome, { recursive: true }); mkdirSync(codexHome, { recursive: true });
@@ -60,12 +60,12 @@ process.env.REM_SNO_CAPTURE = join(home, 'cloud-requests.jsonl');
 mkdirSync(join(home, '.sno'), { recursive: true });
 writeFileSync(join(home, '.sno', 'settings.json'), stationSettings('rem-enhanced'));
 const backend = () => {
-  const live = new RealBackend(30_000, { loopHomeBase: join(store, '.loop-home') });
-  if (process.env.REM_DROP_SPAWN_ENV === '1') live.spawnEnv = () => undefined;
+  const live = new RealBackend(30_000);
+  if (process.env.REM_DROP_ISOLATION === '1') live.isolation = () => [];
   return live;
 };
 
-// the fixture real directories must be untouched by the run (only .loop-home receives the copies)
+// the fixture real directories must be untouched by the run: no saved turn, no renewed login
 const claudeHomeBefore = hashListing(claudeHome);
 const codexHomeBefore = hashListing(codexHome);
 
@@ -120,16 +120,8 @@ assert.match(report, /Uploaded: 6/);
 assert.match(report, /Pages written: 6/);
 assert.match(report, /Pending decisions: 2/);
 
-// the seeded credential copies live under .loop-home; the fixture real dirs are unchanged
-assert.equal(readFileSync(join(store, '.loop-home', 'claude', '.credentials.json'), 'utf8'), '{"claude":"fixture-token"}', 'the Claude credential was copied under .loop-home');
-assert.equal(readFileSync(join(store, '.loop-home', 'codex', 'auth.json'), 'utf8'), '{"codex":"fixture-token"}', 'the Codex credential was copied under .loop-home');
-
-// the shims wrote their own session files during their turns; under isolation those are under .loop-home
-const loopOwn = (root) => existsSync(root) ? findJsonl(root).filter(p => /loopself-/.test(p)) : [];
-if (process.env.REM_DROP_SPAWN_ENV !== '1') {
-  assert.ok(loopOwn(join(store, '.loop-home', 'claude', 'projects')).length > 0, 'a Claude loop-own session landed under .loop-home');
-  assert.ok(loopOwn(join(store, '.loop-home', 'codex', 'sessions')).length > 0, 'a Codex loop-own session landed under .loop-home');
-}
+// the turns ran on the fixture login in place: no login was copied anywhere under the store
+assert.deepEqual(findAll(store).filter(p => /(\.credentials|auth)\.json$/.test(p)), [], 'no login file was copied under the store');
 
 // --- day two ---
 const r2 = run(store, DAY2, 'u', backend());
@@ -162,6 +154,12 @@ function traceFile(t) {
   // raw/<user>/<agent>/<project>/<session>.v<n>.json — find it by session id under raw/
   const hits = findRaw(join(store, 'raw')).filter(p => p.includes(t.session_id) && p.endsWith('.json') && !p.endsWith('.label.json'));
   return hits[0];
+}
+function findAll(root) {
+  const out = [];
+  const walk = (d) => { for (const e of readdirSync(d, { withFileTypes: true })) { const p = join(d, e.name); if (e.isDirectory()) walk(p); else out.push(p); } };
+  walk(root);
+  return out;
 }
 function findRaw(root) {
   if (!existsSync(root)) return [];

@@ -5,7 +5,8 @@ import { cpSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } 
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { run } from './rem-reflect.ts';
+import { run, status } from './rem-reflect.ts';
+import { readState } from './store.ts';
 import { BackendError } from './backend.ts';
 import type { Backend, SpawnRequest } from './backend.ts';
 import { readLessons } from './lessons.ts';
@@ -166,13 +167,18 @@ test('an answer whose quote is not in the session is refused and writes nothing,
   assert.match(report, /New lessons: 0/);
 });
 
-test('a session the model finds nothing in writes nothing, and a CLI that cannot run is asked again next night', t => {
+test('a session the model finds nothing in writes nothing, and a CLI that cannot run fails the night and is asked again next night', t => {
   localFirst(t);
   const config = fixtureConfig({ claude_root: tmp('c'), codex_root: tmp('x') });
   const store = makeStore(config);
   correctedSession(config, MT + 12 * 3_600_000);
   const down: Backend = { spawn() { throw new BackendError('labeler-unavailable', 'exit 1'); } };
-  assert.equal(run(store, NIGHT, 'u', down).code, 0);
+  // Every call failing (a logged-out or missing CLI) used to end as "success, 0 lessons" every night.
+  assert.equal(run(store, NIGHT, 'u', down).code, 1);
+  assert.equal(readState(store).last_terminal?.status, 'no_backend');
+  const shown = status(store, NIGHT, '', true);
+  assert.equal(shown.code, 1);
+  assert.match(shown.lines.join('\n'), /no backend · run 20260908-0000/);
   assert.equal(readLessons(store).length, 0);
   const none = new WriterCli(() => ({ lesson: null }));
   assert.equal(run(store, NEXT, 'u', none).code, 0);
@@ -213,7 +219,7 @@ process.stdout.write(JSON.stringify({ lesson: {
   assert.equal(ran.status, 0, ran.stdout + ran.stderr);
   assert.match(ran.stdout, /^20260908-0000 success/m);
 
-  assert.deepEqual(readFileSync(calls, 'utf8').trim().split('\n'), ['exec --skip-git-repo-check -'], 'the session CLI was asked exactly once');
+  assert.deepEqual(readFileSync(calls, 'utf8').trim().split('\n'), ['exec --skip-git-repo-check --ignore-user-config --ephemeral -'], 'the session CLI was asked exactly once, on the login in place without the owner config');
   assert.deepEqual(staged(store, 'cloud-request.json'), [], 'nothing was prepared for upload');
   assert.equal(readFileSync(join(profile, 'settings.json'), 'utf8'), settingsBefore, 'the owner settings file is unchanged');
 

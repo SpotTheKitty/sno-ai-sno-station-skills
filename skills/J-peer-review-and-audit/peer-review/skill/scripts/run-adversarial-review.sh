@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # run-adversarial-review.sh — run the peer-review adversarial-review prompt in
-# a fresh headless session of `codex exec` or `claude -p`, with the target file
-# contents inlined via stdin.
+# a fresh headless reviewer session, with target contents supplied by stdin/file.
 #
 # Why this script exists:
 #   - Inlining file contents means the reviewer never needs filesystem access,
@@ -9,9 +8,8 @@
 #   - One stable command means the calling agent does not have to reconstruct a
 #     fragile heredoc inline. A single `bash <script> <files>` call is reproducible.
 #   - Reviewer independence: the review runs in its own new session that has
-#     none of the caller's conversation. The other vendor's CLI is used when it
-#     is installed and logged in; otherwise the caller's own CLI runs the review
-#     and the report says so on its first line.
+#     none of the caller's conversation. Only an answer from another vendor
+#     counts; exhausted candidates leave a refusal, never a same-vendor review.
 #
 # Usage:
 #   run-adversarial-review.sh <file1> [<file2> ...]
@@ -21,9 +19,11 @@
 #   XDG_CONFIG_HOME    — settings root (default: $HOME/.config); sno/models.toml
 #                        selects role reviewer (Codex) or reviewer_claude (Claude).
 #                        Unset/empty role: no model flag.
-#   REVIEW_CALLER      — codex | claude-code: the harness running this script.
-#                        The other vendor's CLI is preferred as reviewer.
-#   REVIEW_AUTHOR      — codex | claude-code: the harness that wrote the work under
+#   REVIEW_CALLER      — claude-code | codex | hermes | openclaw | cursor.
+#                        Otherwise detect seat, ancestors, then session markers.
+#   REVIEW_AUTHOR_MODEL — current model for a multi-vendor caller without a seat.
+#   REVIEW_REVIEWER    — cursor: explicitly select an isolated Cursor reviewer.
+#   REVIEW_AUTHOR      — the harness that wrote the work under
 #                        review (default: REVIEW_CALLER). Only labels the uploaded
 #                        review.run event; it never changes the reviewer choice.
 #   CODEX_EFFORT       — Codex reasoning effort (default: high)
@@ -71,10 +71,9 @@
 #   - The script does NOT pass file paths to the reviewer. It sees only the
 #     inlined text under "=== FILE: <path> ===" markers in stdin.
 #   - --skip-git-repo-check is set so review works from any cwd.
-#   - Exit codes: 2 no reviewer CLI installed and logged in / prompt unreadable, 3 no files given,
-#     4 a target file is unreadable, 5 unknown REVIEW_KIND, 6 reviewer
-#     attempt(s) exhausted retries (single-wave), 7 one or more waves
-#     exhausted retries (batched — temp dir kept, path printed to stderr),
+#   - Exit codes: 2 cross review unavailable / author unknown / prompt unreadable, 3 no files given,
+#     4 a target file is unreadable, 5 unknown REVIEW_KIND/caller,
+#     7 merged report could not be written (wave captures kept),
 #     8 invalid reliability override, 9 concurrency cap reached (nothing ran;
 #     safe to retry later — the caller must not block waiting on a slot),
 #     10 same-scope review cap reached, 11 journey mode without CHARTER/FENCE.
@@ -106,7 +105,48 @@ case "$REVIEW_KIND" in
     *) echo "error: unknown REVIEW_KIND '$REVIEW_KIND' (use code|plan|test)" >&2; exit 5 ;;
 esac
 
+agent_from_command() {
+    local word
+    local -a words
+    read -r -a words <<< "$1"
+    for word in "${words[@]}"; do
+        case "${word##*/}" in
+            claude) printf claude-code; return ;;
+            codex|hermes|openclaw) printf '%s' "${word##*/}"; return ;;
+            openclaw-tui) printf openclaw; return ;;
+            cursor-agent) printf cursor; return ;;
+        esac
+    done
+    return 1
+}
+
 REVIEW_CALLER="${REVIEW_CALLER:-}"
+# A Cursor started from another agent's shell inherits that agent's ancestors and markers.
+if [[ -z "$REVIEW_CALLER" && -n "${CURSOR_AGENT:-}" ]]; then
+    REVIEW_CALLER=cursor
+fi
+if [[ -z "$REVIEW_CALLER" && -n "${SNO_REACH_ADDR:-}" ]]; then
+    runtime=$(python3 - "${SNO_REACH_STATE_ROOT:-$HOME/.local/state/sno-reach}/$SNO_REACH_ADDR/seat.json" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        print(json.load(f).get("runtime", ""))
+except (OSError, ValueError):
+    pass
+PY
+    )
+    REVIEW_CALLER=$(agent_from_command "$runtime")
+fi
+if [[ -z "$REVIEW_CALLER" ]]; then
+    ancestor=$PPID
+    while [[ "$ancestor" =~ ^[0-9]+$ && "$ancestor" -gt 1 ]]; do
+        read -r parent comm argv < <(ps -p "$ancestor" -o ppid= -o comm= -o args= 2>/dev/null) || break
+        REVIEW_CALLER=$(agent_from_command "$comm $argv")
+        [[ -z "$REVIEW_CALLER" ]] || break
+        [[ "$parent" != "$ancestor" ]] || break
+        ancestor=$parent
+    done
+fi
 if [[ -z "$REVIEW_CALLER" ]]; then
     if [[ -n "${CODEX_THREAD_ID:-}" ]]; then REVIEW_CALLER=codex
     elif [[ -n "${CLAUDECODE:-}" ]]; then REVIEW_CALLER=claude-code
@@ -114,33 +154,15 @@ if [[ -z "$REVIEW_CALLER" ]]; then
     fi
 fi
 case "$REVIEW_CALLER" in
-    codex) CALLER_CLI=codex; OTHER_CLI=claude ;;
-    claude-code) CALLER_CLI=claude; OTHER_CLI=codex ;;
-    *) echo "error: REVIEW_CALLER must be codex or claude-code" >&2; exit 5 ;;
+    claude-code|codex|hermes|openclaw|cursor) : ;;
+    *) echo "error: REVIEW_CALLER must be claude-code, codex, hermes, openclaw or cursor" >&2; exit 5 ;;
+esac
+case "${REVIEW_REVIEWER:-}" in
+    ''|cursor) : ;;
+    *) echo "error: REVIEW_REVIEWER must be cursor or unset" >&2; exit 5 ;;
 esac
 REVIEW_AUTHOR="${REVIEW_AUTHOR:-$REVIEW_CALLER}"
-
-# Reviewer independence comes from a fresh, separate headless session. The other
-# vendor's CLI is preferred when it is installed and logged in; otherwise the
-# caller's own CLI runs the review in a new session, and the report header says
-# so. Chosen once, before the first attempt.
-cli_ready() { # $1 = codex|claude -> 0 when installed and logged in
-    command -v "$1" >/dev/null 2>&1 || return 1
-    case "$1" in
-        codex) codex login status </dev/null >/dev/null 2>&1 ;;
-        claude) claude auth status </dev/null >/dev/null 2>&1 ;;
-    esac
-}
-SAME_VENDOR=0
-if cli_ready "$OTHER_CLI"; then
-    REVIEWER="$OTHER_CLI"
-elif command -v "$CALLER_CLI" >/dev/null 2>&1; then
-    REVIEWER="$CALLER_CLI"
-    SAME_VENDOR=1
-else
-    echo "error: neither the 'codex' nor the 'claude' CLI is installed and logged in" >&2
-    exit 2
-fi
+REVIEWER="" REVIEWER_MODEL="" REVIEWER_PROVIDER="" REVIEWER_VENDOR="" REVIEWER_SESSION=""
 
 if [[ $# -eq 0 ]]; then
     echo "usage: $(basename "$0") <file1> [<file2> ...]" >&2
@@ -557,13 +579,14 @@ record_stats() { # $1=outcome $2=report-file(optional)
     # empty (codex exited clean and wrote nothing), watchdog (stalled or hit the
     # hard timeout and was killed), exit:<n> (codex itself failed), interrupted
     # (this wrapper was signalled). Empty on success.
-    ledger_write "$(printf '{"ts":%s,"event":"end","run":%s,"scope":%s,"journey":%s,"kind":%s,"round":%d,"cap":%d,"files":%d,"targets":%s,"lines":%s,"probe":%s,"duration_s":%d,"waves":%s,"report":%s,"outcome":%s,"failure":%s,"verdict":%s,"fix_now":%s,"debt":%s,"out_of_context":%s,"high":%s,"medium":%s,"override":%s}' \
+    ledger_write "$(printf '{"ts":%s,"event":"end","run":%s,"scope":%s,"journey":%s,"kind":%s,"round":%d,"cap":%d,"files":%d,"targets":%s,"lines":%s,"probe":%s,"duration_s":%d,"waves":%s,"report":%s,"outcome":%s,"failure":%s,"verdict":%s,"fix_now":%s,"debt":%s,"out_of_context":%s,"high":%s,"medium":%s,"override":%s,"caller":%s,"reviewer":%s,"reviewer_vendor":%s}' \
         "$(json_str "$(date -Is)")" "$(json_str "$RUN_ID")" "$(json_str "$SCOPE_ID")" "$(json_str "$REVIEW_JOURNEY")" \
         "$(json_str "$REVIEW_KIND")" "$ROUND_N" "$REVIEW_CAP" "$N" "$(json_arr "${FILES[@]}")" \
         "${TOTAL_LINES:-0}" "$PROBE_PRESENT" "$dur" "${NUM_WAVES:-1}" "$(json_str "$report")" "$(json_str "$outcome")" \
         "$(json_str "${LAST_FAILURE_KIND:-}")" "$(json_str "${verdict:-unknown}")" \
         "${nFix:-null}" "${nDebt:-null}" "${nCtx:-null}" "${nH:-null}" "${nM:-null}" \
-        "$(json_str "${REVIEW_CAP_OVERRIDE:-}")")"
+        "$(json_str "${REVIEW_CAP_OVERRIDE:-}")" "$(json_str "$REVIEW_CALLER")" \
+        "$(json_str "$REVIEWER")" "$(json_str "$REVIEWER_VENDOR")")"
     # Findings go somewhere durable, keyed by reviewed file, with a status column.
     # Never allowed to fail the review: the
     # report is already written and on stdout by this point.
@@ -573,7 +596,7 @@ record_stats() { # $1=outcome $2=report-file(optional)
             bash "$rf" record "$report" --run "$RUN_ID" --scope "$SCOPE_ID" \
                 --kind "$REVIEW_KIND" 2>&1 >/dev/null | head -3 >&2 || true
         fi
-        local p1 p2 p3 empty=true reviewer_harness="$REVIEWER" project
+        local p1 p2 p3 empty=true reviewer_harness="$REVIEWER" author_harness="$REVIEW_AUTHOR" project
         read -r p1 p2 p3 < <(awk '
             {
                 line = tolower($0)
@@ -588,14 +611,83 @@ record_stats() { # $1=outcome $2=report-file(optional)
             END { print p1+0, p2+0, p3+0 }
         ' "$report")
         (( p1 + p2 + p3 == 0 )) || empty=false
-        [[ "$reviewer_harness" != claude ]] || reviewer_harness=claude-code
+        [[ "$author_harness" != claude ]] || author_harness=claude-code
         project="$(git rev-parse --show-toplevel 2>/dev/null)" || project="$PWD"
         send_event review.run "--agent=$REVIEW_CALLER" "--project=$project" \
-            "--author_harness=$REVIEW_AUTHOR" "--reviewer_harness=$reviewer_harness" \
+            "--author_harness=$author_harness" "--reviewer_harness=$reviewer_harness" \
             "--findings_p1=$p1" "--findings_p2=$p2" "--findings_p3=$p3" \
             "--empty=$empty" "--duration_ms=$((dur * 1000))"
     fi
 }
+
+normalize_vendor() {
+    case "$1" in
+        openai|openai-codex|codex|chatgpt) printf openai ;;
+        anthropic|claude) printf anthropic ;;
+        local:*) printf '%s' "$1" ;;
+        local*) printf 'local:%s' "$1" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+cross_review_unavailable() {
+    local message="cross review was not possible: no reviewer on another vendor answered"
+    log "$message"
+    if [[ "$1" == refused ]]; then
+        record_refused no-other-vendor "$message"
+    else
+        record_stats failed ""
+    fi
+}
+
+PICK_ARGS=(subscription-quota-check --pick review --from "$REVIEW_CALLER")
+if [[ -n "${SNO_REACH_ADDR:-}" ]]; then
+    PICK_ARGS+=(--seat "$SNO_REACH_ADDR")
+elif [[ -n "${REVIEW_AUTHOR_MODEL:-}" ]]; then
+    PICK_ARGS+=(--model "$REVIEW_AUTHOR_MODEL")
+elif [[ "$REVIEW_CALLER" != claude-code && "$REVIEW_CALLER" != codex ]]; then
+    log "error: author's model is unknown for $REVIEW_CALLER; set REVIEW_AUTHOR_MODEL or use a Reach seat; no review runs"
+    record_refused current-model-unknown "author's model is unknown for $REVIEW_CALLER"
+    exit 2
+fi
+if ! PICK_JSON=$(timeout 60 sno "${PICK_ARGS[@]}" --json); then
+    log "error: reviewer pick failed for $REVIEW_CALLER; no review runs"
+    cross_review_unavailable refused
+    exit 2
+fi
+if ! jq -e '.ok == true' <<< "$PICK_JSON" >/dev/null 2>&1; then
+    if [[ "$(jq -r '.reason // empty' <<< "$PICK_JSON" 2>/dev/null)" == current-model-unknown ]]; then
+        log "error: author's model is unknown for $REVIEW_CALLER; set REVIEW_AUTHOR_MODEL or repair the Reach seat; no review runs"
+        record_refused current-model-unknown "author's model is unknown for $REVIEW_CALLER"
+    else
+        cross_review_unavailable refused
+    fi
+    exit 2
+fi
+case "$REVIEW_CALLER" in
+    claude-code) AUTHOR_VENDOR=anthropic ;;
+    codex) AUTHOR_VENDOR=openai ;;
+    *) AUTHOR_VENDOR=$(jq -r '.from.vendor // empty' <<< "$PICK_JSON") ;;
+esac
+if [[ -z "$AUTHOR_VENDOR" ]]; then
+    log "error: author's model is unknown for $REVIEW_CALLER; no review runs"
+    record_refused current-model-unknown "author's model is unknown for $REVIEW_CALLER"
+    exit 2
+fi
+if [[ "${REVIEW_REVIEWER:-}" == cursor ]]; then
+    PICK_JSON=$(jq '.candidates |= map(select(.agent == "cursor"))' <<< "$PICK_JSON")
+elif [[ "$REVIEW_CALLER" == cursor ]]; then
+    preferred=claude-code
+    if jq -e --arg vendor "$AUTHOR_VENDOR" 'any(.candidates[]; .agent == "codex" and .vendor != $vendor)' <<< "$PICK_JSON" >/dev/null &&
+        command -v codex >/dev/null 2>&1 && timeout 60 codex login status </dev/null >/dev/null 2>&1; then
+        preferred=codex
+    fi
+    PICK_JSON=$(jq --arg preferred "$preferred" '.candidates |= map(select(.agent == $preferred))' <<< "$PICK_JSON")
+fi
+if ! jq -e '.candidates | length > 0' <<< "$PICK_JSON" >/dev/null 2>&1; then
+    cross_review_unavailable refused
+    exit 2
+fi
 
 # ---------------------------------------------------------------------------
 # Concurrency slot — fail fast, never queue.
@@ -694,7 +786,7 @@ kill_tree() {
 ACTIVE_PID=""
 stop_active() {
     if [[ -n "$ACTIVE_PID" ]] && kill -0 "$ACTIVE_PID" 2>/dev/null; then
-        log "[run-adversarial-review] interrupted — killing codex process tree (pid $ACTIVE_PID)"
+        log "[run-adversarial-review] interrupted — killing $REVIEWER process tree (pid $ACTIVE_PID)"
         kill_tree "$ACTIVE_PID"
     fi
 }
@@ -713,11 +805,11 @@ activity_size() {
     printf '%s' "$total"
 }
 
-# run_codex_once PROMPT_FILE STDOUT_FILE STDERR_FILE OUTPUT_LAST_MSG_FILE
-# Runs one codex attempt with a liveness watchdog on all output growth plus a
-# hard overall timeout. Returns codex's exit status, or 124 if the watchdog
+# run_reviewer_once PROMPT_FILE STDOUT_FILE STDERR_FILE OUTPUT_LAST_MSG_FILE
+# Runs one reviewer attempt with a liveness watchdog on all output growth plus a
+# hard overall timeout. Returns the CLI's exit status, or 124 if the watchdog
 # killed it (stall or timeout).
-run_codex_once() {
+run_reviewer_once() {
     local prompt_file="$1" stdout_file="$2" stderr_file="$3" last_msg_file="$4"
     : > "$stdout_file"
     : > "$stderr_file"
@@ -750,14 +842,47 @@ run_codex_once() {
         --output-format text
     )
 
-    log "[run-adversarial-review] caller=$REVIEW_CALLER reviewer=$REVIEWER same_vendor=$SAME_VENDOR"
+    log "[run-adversarial-review] caller=$REVIEW_CALLER reviewer=$REVIEWER model=$REVIEWER_MODEL provider=$REVIEWER_PROVIDER"
+    REVIEWER_SESSION=""
     # env -u: the reviewer starts a new session and never inherits the caller's.
-    if [[ "$REVIEWER" == claude ]]; then
+    if [[ "$REVIEWER" == claude-code ]]; then
         env -u CLAUDECODE -u CODEX_THREAD_ID claude "${claude_args[@]}" \
             < "$prompt_file" > "$last_msg_file" 2> "$stderr_file" &
-    else
+    elif [[ "$REVIEWER" == cursor ]]; then
+        # A throwaway home holding only the login and the install, and an empty folder: none of the user's or the
+        # project's Cursor hooks fire and no memory is captured. --trust: a never-opened folder otherwise exits
+        # "Workspace Trust Required"; ask mode is read-only.
+        cursor_tmp="$(mktemp -d)"
+        mkdir -p "$cursor_tmp/home/.local" "$cursor_tmp/cwd"
+        ln -s "$HOME/.local/share" "$cursor_tmp/home/.local/share"
+        if [[ "$(uname -s)" == Darwin ]]; then
+            cursor_library="$cursor_tmp/home"/Library
+            mkdir -p "$cursor_library"; ln -s "$HOME/Library/Keychains" "$cursor_library/Keychains"
+        else
+            mkdir -p "$cursor_tmp/home/.config/cursor"
+            cp -- "$HOME/.config/cursor/auth.json" "$cursor_tmp/home/.config/cursor/" 2>/dev/null ||
+                log "[run-adversarial-review] $HOME/.config/cursor/auth.json is missing; Cursor CLI not logged in"
+        fi
+        # Its own process group: cursor-agent leaves a language server running after it exits (observed).
+        set -m
+        ( cd -- "$cursor_tmp/cwd" && exec env -u CLAUDECODE -u CODEX_THREAD_ID -u CURSOR_AGENT HOME="$cursor_tmp/home" \
+            cursor-agent -p --trust --mode ask --output-format json ) < "$prompt_file" > "$stdout_file" 2> "$stderr_file" &
+        cursor_pid=$!
+        set +m
+    elif [[ "$REVIEWER" == codex ]]; then
         env -u CLAUDECODE -u CODEX_THREAD_ID codex "${codex_args[@]}" \
             < "$prompt_file" > "$stdout_file" 2> "$stderr_file" &
+    elif [[ "$REVIEWER" == hermes ]]; then
+        local hermes_args=(chat --query-file "$prompt_file" --oneshot -Q --ignore-user-config --ignore-rules)
+        [[ -z "$REVIEWER_MODEL" ]] || hermes_args+=(-m "$REVIEWER_MODEL")
+        [[ -z "$REVIEWER_PROVIDER" ]] || hermes_args+=(--provider "$REVIEWER_PROVIDER")
+        env -u CLAUDECODE -u CODEX_THREAD_ID hermes "${hermes_args[@]}" \
+            > "$stdout_file" 2> "$stderr_file" &
+    elif [[ "$REVIEWER" == openclaw ]]; then
+        REVIEWER_SESSION="agent:main:explicit:sno-oneshot-${RUN_ID}-${RANDOM}"
+        env -u CLAUDECODE -u CODEX_THREAD_ID openclaw agent --agent main \
+            --session-id "${REVIEWER_SESSION##*:}" --model "$REVIEWER_PROVIDER/$REVIEWER_MODEL" \
+            --message-file "$prompt_file" --json > "$stdout_file" 2> "$stderr_file" &
     fi
     ACTIVE_PID=$!
     local start now elapsed quiet last_size cur_size last_growth next_progress status
@@ -778,14 +903,14 @@ run_codex_once() {
             next_progress=$(( next_progress + PROGRESS_SECS ))
         fi
         if (( elapsed >= TIMEOUT_SECS )); then
-            log "[run-adversarial-review] hard timeout after ${elapsed}s — killing codex (pid $ACTIVE_PID)"
+            log "[run-adversarial-review] hard timeout after ${elapsed}s — killing $REVIEWER (pid $ACTIVE_PID)"
             kill_tree "$ACTIVE_PID"
             wait "$ACTIVE_PID" 2>/dev/null
             ACTIVE_PID=""
             return 124
         fi
         if (( quiet >= STALL_SECS )); then
-            log "[run-adversarial-review] stalled ${quiet}s with no output activity — killing codex (pid $ACTIVE_PID)"
+            log "[run-adversarial-review] stalled ${quiet}s with no output activity — killing $REVIEWER (pid $ACTIVE_PID)"
             kill_tree "$ACTIVE_PID"
             wait "$ACTIVE_PID" 2>/dev/null
             ACTIVE_PID=""
@@ -796,21 +921,42 @@ run_codex_once() {
     wait "$ACTIVE_PID"
     status=$?
     ACTIVE_PID=""
+    if [[ "$status" -eq 0 ]]; then
+        case "$REVIEWER" in
+            hermes)
+                REVIEWER_SESSION=$(sed -n 's/^[[:space:]]*session_id: \([^[:space:]]*\).*$/\1/p' "$stdout_file" "$stderr_file" | tail -1)
+                sed '/^[[:space:]]*session_id: /d' "$stdout_file" > "$last_msg_file" ;;
+            openclaw)
+                jq -r '(.result.payloads // .payloads // []) | map(.text // empty) | join("\n")' \
+                    "$stdout_file" > "$last_msg_file" || return 1 ;;
+        esac
+    fi
+    if [[ "$REVIEWER" == cursor ]]; then
+        kill -KILL -- "-$cursor_pid" 2>/dev/null || true
+        rm -rf -- "$cursor_tmp"
+        if grep -q 'keychain is locked' "$stderr_file" "$stdout_file"; then
+            log "[run-adversarial-review] Cursor CLI login unreadable (keychain locked); run it from the desktop session"
+        fi
+        # The JSON answer's `result` is the review; `is_error` is a failed run, not a review.
+        [[ "$status" -ne 0 ]] || jq -er 'if .is_error then error("cursor-agent reported an error") else .result end' \
+            "$stdout_file" > "$last_msg_file" || status=1
+    fi
     return "$status"
 }
 
 # run_with_retries PROMPT_FILE STDOUT_FILE STDERR_FILE OUTPUT_LAST_MSG_FILE LABEL
-# Retries run_codex_once up to MAX_RETRIES times on stall/timeout/nonzero
+# Retries fixed-vendor CLIs up to MAX_RETRIES times on stall/timeout/nonzero
 # exit/empty final response. Returns 0 on success.
 run_with_retries() {
     local prompt_file="$1" stdout_file="$2" stderr_file="$3" last_msg_file="$4" label="$5"
     local attempt=1 max_attempts=$(( MAX_RETRIES + 1 )) status
+    [[ "$REVIEWER" == codex || "$REVIEWER" == claude-code ]] || max_attempts=1
 
     while (( attempt <= max_attempts )); do
         log "[run-adversarial-review] ${label}: attempt ${attempt}/${max_attempts}…"
-        run_codex_once "$prompt_file" "$stdout_file" "$stderr_file" "$last_msg_file"
+        run_reviewer_once "$prompt_file" "$stdout_file" "$stderr_file" "$last_msg_file"
         status=$?
-        if [[ $status -eq 0 && -s "$last_msg_file" ]]; then
+        if [[ $status -eq 0 ]] && grep -q '[^[:space:]]' "$last_msg_file"; then
             log "[run-adversarial-review] ${label}: attempt ${attempt}/${max_attempts} succeeded"
             LAST_FAILURE_KIND=""
             return 0
@@ -836,12 +982,42 @@ run_with_retries() {
     return 1
 }
 
-# A same-vendor review is labelled on the first line of the saved report, so a
-# reader never mistakes it for an independent-vendor review.
-SAME_VENDOR_HEADER="Reviewer: same-vendor review (${REVIEWER} in a fresh session; the ${OTHER_CLI} CLI was not installed or not logged in)."
-stamp_same_vendor() { # $1 = report file
-    [[ "$SAME_VENDOR" -eq 1 && -s "$1" ]] || return 0
-    { printf '%s\n\n' "$SAME_VENDOR_HEADER"; cat -- "$1"; } > "$1.stamped" && mv -- "$1.stamped" "$1"
+run_with_candidates() {
+    local provider candidate
+    while IFS= read -r candidate; do
+        IFS=$'\x1f' read -r REVIEWER REVIEWER_MODEL REVIEWER_PROVIDER REVIEWER_VENDOR <<< "$candidate"
+        provider=""
+        case "$REVIEWER" in
+            codex) REVIEWER_VENDOR=openai; REVIEWER_MODEL=$CODEX_MODEL ;;
+            claude-code) REVIEWER_VENDOR=anthropic; REVIEWER_MODEL=$CLAUDE_MODEL ;;
+            hermes|openclaw) : ;;
+            cursor) [[ "${REVIEW_REVIEWER:-}" == cursor ]] || { log "[run-adversarial-review] skipped agent=cursor model=$REVIEWER_MODEL reason=cursor-not-isolated"; continue; } ;;
+            *) log "[run-adversarial-review] skipped agent=$REVIEWER model=$REVIEWER_MODEL reason=unavailable"; continue ;;
+        esac
+        [[ "$REVIEWER_VENDOR" != "$AUTHOR_VENDOR" ]] || continue
+        if run_with_retries "$@"; then
+            provider=$REVIEWER_PROVIDER
+            case "$REVIEWER" in
+                codex) provider=openai ;;
+                claude-code) provider=anthropic ;;
+                hermes)
+                    provider=""
+                    [[ -z "$REVIEWER_SESSION" ]] || provider=$(timeout 60 sno rotate-agent-answer-provider \
+                        --agent hermes --session "$REVIEWER_SESSION") || provider="" ;;
+                openclaw)
+                    provider=$(timeout 60 sno rotate-agent-answer-provider --agent openclaw --session-key "$REVIEWER_SESSION") || provider="" ;;
+            esac
+            REVIEWER_VENDOR=$(normalize_vendor "$provider")
+            if [[ -n "$REVIEWER_VENDOR" && "$REVIEWER_VENDOR" != "$AUTHOR_VENDOR" ]]; then
+                return 0
+            fi
+            LAST_FAILURE_KIND=answer-vendor-unknown
+            [[ -z "$REVIEWER_VENDOR" ]] || LAST_FAILURE_KIND=same-vendor-answer
+        fi
+        log "[run-adversarial-review] discarded agent=$REVIEWER model=$REVIEWER_MODEL provider=${provider:-unknown} requested_provider=$REVIEWER_PROVIDER session=$REVIEWER_SESSION reason=$LAST_FAILURE_KIND"
+        : > "$4"
+    done < <(jq -r '.candidates[] | [.agent, (.model // ""), (.provider // ""), (.vendor // "")] | join("\u001f")' <<< "$PICK_JSON")
+    return 1
 }
 
 # build_prompt PROMPT_OUT_FILE WAVE_NOTE FILE_INDICES...
@@ -851,6 +1027,7 @@ build_prompt() {
     local out_file="$1" wave_note="$2"; shift 2
     local idx f
     {
+        printf '%s\n' '[sno-oneshot] Station one-shot run, not a user session.'
         sed 's/You are Codex performing/You are performing/; s/# Codex Adversarial/# Adversarial/' "$PROMPT_FILE"
         # Context contract: severity must be judged
         # against this; a severity cap is legal ONLY when it cites an entry here.
@@ -925,21 +1102,20 @@ if [[ "$BATCH" -eq 0 ]]; then
     for (( i=0; i<N; i++ )); do all_idx+=("$i"); done
     build_prompt "$PROMPT_TMP" "" "${all_idx[@]}"
 
-    if run_with_retries "$PROMPT_TMP" "$STDOUT_TMP" "$STDERR_TMP" "$REVIEW_OUTPUT_FILE" "review"; then
-        stamp_same_vendor "$REVIEW_OUTPUT_FILE"
+    if run_with_candidates "$PROMPT_TMP" "$STDOUT_TMP" "$STDERR_TMP" "$REVIEW_OUTPUT_FILE" "review"; then
         cat -- "$REVIEW_OUTPUT_FILE"
         printf '\n[run-adversarial-review] final review also written to: %s\n' "$REVIEW_OUTPUT_FILE" >&2
         record_stats success "$REVIEW_OUTPUT_FILE"
         rm -f "$PROMPT_TMP" "$STDOUT_TMP" "$STDERR_TMP"
         exit 0
     else
-        record_stats failed ""
-        log "[run-adversarial-review] review failed after ${MAX_RETRIES} retries — see stdout/stderr captures for the last attempt:"
+        cross_review_unavailable end
+        log "[run-adversarial-review] candidates exhausted — see stdout/stderr captures for the last attempt:"
         log "  stdout: $STDOUT_TMP"
         log "  stderr: $STDERR_TMP"
         log "  final: $REVIEW_OUTPUT_FILE"
         log "  prompt: $PROMPT_TMP"
-        exit 6
+        exit 2
     fi
 fi
 
@@ -1022,22 +1198,21 @@ for (( w=0; w<NUM_WAVES; w++ )); do
     fi
     build_prompt "$prompt_tmp" "$wave_note" "${wave_idx[@]}"
 
-    if run_with_retries "$prompt_tmp" "$stdout_tmp" "$stderr_tmp" "$lastmsg_tmp" "wave ${wave_num}/${NUM_WAVES} (${wave_files[*]})"; then
+    if run_with_candidates "$prompt_tmp" "$stdout_tmp" "$stderr_tmp" "$lastmsg_tmp" "wave ${wave_num}/${NUM_WAVES} (${wave_files[*]})"; then
         WAVE_REPORTS+=("$lastmsg_tmp")
     else
-        log "[run-adversarial-review] wave ${wave_num}/${NUM_WAVES} failed after ${MAX_RETRIES} retries — files: ${wave_files[*]}"
+        log "[run-adversarial-review] wave ${wave_num}/${NUM_WAVES} exhausted candidates — files: ${wave_files[*]}"
         ANY_FAILED=1
         break
     fi
 done
 
 if [[ "$ANY_FAILED" -eq 1 ]]; then
-    record_stats failed ""
+    cross_review_unavailable end
     log "[run-adversarial-review] batched review aborted — intermediate files kept at: $WORKDIR"
-    exit 7
+    exit 2
 fi
 
-[[ "$SAME_VENDOR" -eq 1 ]] && printf '%s\n\n' "$SAME_VENDOR_HEADER"
 for (( w=0; w<NUM_WAVES; w++ )); do
     wave_num=$(( w + 1 ))
     printf '## Wave %d/%d\n\n' "$wave_num" "$NUM_WAVES"
@@ -1047,7 +1222,6 @@ done
 
 MERGED_REPORT="${REVIEW_OUTPUT_FILE:-$(archive_path)}"
 cat -- "${WAVE_REPORTS[@]}" > "$MERGED_REPORT" 2>/dev/null || true
-stamp_same_vendor "$MERGED_REPORT"
 # Every wave produced a report, but if the merge itself could not be written the
 # findings are gone — recording that as success is exactly the silent pass this
 # accounting exists to stop.

@@ -167,3 +167,13 @@ test('a real codex exec runs the recall hook only with hook trust; no trust and 
   runCodex(trust);
   assert.equal(shownLines(store).length, 1, 'a missing hook binary cannot run recall, so no new shown line is added (planted defect)');
 });
+
+test('install-hooks run through sno prints the absolute sno path, because a hook PATH often lacks ~/.local/bin', () => {
+  const out = execFileSync(process.execPath, ['--experimental-strip-types', REMREFLECT, 'install-hooks', '--print'],
+    { encoding: 'utf8', env: { ...process.env, SNO_EXECUTABLE: "/srv/o'neil/.local/bin/sno" } });
+  const quoted = "'/srv/o'\\\\''neil/.local/bin/sno'";
+  for (const agent of ['claude-code', 'codex']) {
+    assert.ok(out.includes(`"command": "${quoted} rem-reflect recall --agent ${agent}"`), `${agent} session start uses the absolute path`);
+    assert.ok(out.includes(`"command": "${quoted} rem-reflect recall --agent ${agent} --first-message"`), `${agent} first message uses the absolute path`);
+  }
+});

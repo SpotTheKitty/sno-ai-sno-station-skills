@@ -1,6 +1,6 @@
 ---
 name: rotate-agent
-description: "Quota-triggered failover between agent harness vendors, either direction. When asked to arm it, it starts a watch (optionally time-limited) that reads the working vendor's remaining subscription every few minutes; below a threshold, and only while the sender is still alive, it orders a handoff to a receiver from the other vendor, once. Use when a long run must finish even if one vendor's quota runs out. Not a monitor for anything else."
+description: "Quota-triggered failover from Claude Code, Codex, Cursor, Hermes or OpenClaw. When armed, it reads the sender quota and tries other-vendor models in place, then receiving agents in the configured order. Use when a long run must finish even if one vendor's quota runs out. Not a monitor for anything else."
 requires:
   programs:
     - {name: subscription-quota-check, min_version: "1.0"}
@@ -14,175 +14,179 @@ requires:
 
 # rotate-agent
 
-Needs: `tmux`, `jq`, the `sno` CLI with its Reach runtime (`sno reach`), both vendor CLIs
-(`claude` and `codex`, each installed and logged in, since the quota of both is read), plus
-`sno heartbeat` and `sno subscription-quota-check` from the same install, and the `handoff` skill (its `sno handoff-checkpoint` keeps the progress record). A seat is a registered terminal
-address (see `join-talk`). The owner is the person (or agent) who owns the work; the watchman
-usually is that owner's session. The `sno heartbeat` command runs in the background
-and its log is read by a reader (a background-process tool and a log-tail tool; the examples below
-are Claude Code syntax, so use your harness's equivalents).
+Needs: `tmux`, `jq`, GNU `timeout`, and `sno` with Reach, heartbeat and
+subscription-quota-check, plus the `handoff` skill. The provider-reading script also
+uses `awk` and OpenClaw's session exporter. Install programs through `sno setup`.
+A seat is a registered terminal address (see `join-talk`). The owner owns the work;
+the watchman reads ticks and acts on them, preferably from a seat other than the busy sender.
 
-Rotation is who steps in when the one working is throttled. This skill makes that automatic
-for one long run: a watchman agent arms a heartbeat whose hook reads the working vendor's
-quota, and when the remaining share falls to the threshold the watchman tells the working
-agent to hand the task over to a fresh agent from the other vendor. The handoff itself is the
-`handoff` skill, unchanged; rotation only decides **when** and **to whom**.
+Rotation keeps one authorized long run working when its model's quota is low.
+Agent ids are `claude-code`, `codex`, `cursor`, `hermes`, `openclaw`. Selection belongs
+to `sno subscription-quota-check --pick handoff`: other-vendor models inside the sender
+first, then other agents in `handoff_order`. Never replace the returned order with your own.
+A Cursor quota reading belongs to one conversation, so `--from cursor` needs
+`--sender <A-seat>` on the preflight and `--seat <A-seat>` on the watch; without it
+the reading is unreadable and the watch holds. A Cursor receiver is always a new
+Cursor CLI seat on a tmux window (`sno reach spawn cursor-agent --window`). The trigger
+is the threshold read only; a quota error message from Cursor does not start a rotation.
 
-Quota is normally read on demand only: `sno subscription-quota-check` reads it when the person asks
-or after a vendor refuses work, and never on a timer of its own. Rotation is the one deliberate
-exception. The person's request to rotate is the moment; arming this skill authorizes the
-watchman's heartbeat to read the working vendor's quota every few minutes (the arming example
-below has no time limit; set `--max-hours <N>` to bound it) so the handoff can happen before the refusal. Nothing else should poll quota.
-
-Either direction works. `--from codex --to claude` and `--from claude --to codex` are the same
-procedure with the seats swapped.
-
-## The one rule
-
-**Rotate while the sender is still alive.** A handoff needs the sender to write the brief,
-verify the receiver and release. Once a vendor refuses work, none of that is possible. So the
-trigger is a threshold on remaining quota, read a few minutes apart, never the refusal itself.
-If a tick prints `LATE`, the window was missed: the receiver must resume from disk state
-instead (see below).
+Quota normally is read only on request or refusal. Asking to arm rotation authorizes
+these periodic sender reads. Only the sender is read on ordinary ticks; the full pick
+runs once at a crossing. No other process should poll quota.
 
 ## Three seats
 
 | seat | who | does |
 |---|---|---|
-| working agent (A) | the agent executing the task, vendor `--from` | registers with `join-talk` before starting; checkpoints after every task; runs `handoff` when ordered |
-| watchman | any agent with background processes and a reader (usually the session of the task's owner) | arms the heartbeat, reads ticks, sends the order |
-| receiver (B) | a fresh agent of vendor `--to` | spawned by A inside `handoff`; continues to completion |
+| working agent (A) | the agent executing the task | registers; checkpoints after each task; hands off when ordered |
+| watchman | an agent with background execution and delivery of its results | arms, reads ticks, walks candidates |
+| receiver (B) | an agent chosen by the pick | starts on a tmux window; takes the same checkout and authority |
 
 ## Working agent: three lines added to its prompt
 
-Put these after the task instruction:
-
 ```
 $join-talk
-After every completed task, commit and run `sno handoff-checkpoint <record>` (the progress record, kept outside the checkout), then update its Done and Next lists.
-When you receive "ROTATE: hand off to <vendor> now", stop editing and run $handoff to a receiver of that vendor at once.
+After every completed task run `sno handoff-checkpoint <record>` outside the checkout, then update Done and Next. Commit only if the owner authorized it.
+When told to ROTATE, pause edits and run $handoff with the specified receiver kind, model and provider.
 ```
 
-Per-task checkpoints bound what a receiver has to redo. Registration is what lets the
-watchman reach it.
+`$join-talk` and `$handoff` are the Codex form; in Claude Code and Cursor write `/join-talk` and `/handoff`.
 
-## Watchman: preflight, then arm, read, order, stop
+Checkpoints limit lost progress when A cannot answer. Registration lets the watchman
+reach A. A seat marked `stale` is not proof that its agent is gone: check its terminal
+or process before treating it as dead.
 
-Before arming, prove the rotation can happen at all. `rotate-agent-preflight` and
-`rotate-agent-watch` both ship in this skill's `scripts/`; put them on PATH or give their full
-paths (the examples below use bare names). Run the preflight in the working agent's checkout:
+## Watchman: arm, read, act
+
+The scripts ship under this skill's `scripts/`; use their full paths or put them on PATH.
+A next-agent candidate can be tested before arming:
 
 ```
-rotate-agent-preflight --from codex --to claude --cwd <checkout> --sender <A-seat>
+rotate-agent-preflight --from codex --to claude-code --cwd <checkout> --sender <A-seat> --model <M> --provider <P>
 ```
 
-It checks, in order, that the tools are installed, the receiver vendor's command exists,
-the checkout is a git work tree, the sender's seat is registered, both quotas can be read
-and the receiver has headroom, and finally that a receiver of the `--to` vendor can be
-spawned on a tmux seat in that checkout and answers a call; the trial seat is torn down.
-Every line is `OK <check>` or `FAIL <check>: <what> -> <what to do>`; the last line of a
-clean run is `READY`. Do not arm on a `FAIL`: give the owner the `->` part verbatim (a
-vendor's first run in a directory stops at its trust prompt, and that key is the owner's
-to press) and rerun the preflight after they act.
+It checks tools, checkout, sender registration, the two selected model quotas, and a
+trial receiver's fresh answer. The trial seat is removed. `unread` quota is available;
+actual start and answer decide whether it works. Do not arm on a `FAIL`: repair the
+named failure or try the next candidate. The preflight is not needed to read a tick.
 
-Arming is two calls, as `sno heartbeat` requires (shown in Claude Code syntax: one call starts the
-background process, the other tails its log; use your harness's own tools for both). Create a fresh empty log with
-`mktemp "${TMPDIR:-/tmp}/heartbeat.XXXXXX"` and a state path under
-`${XDG_STATE_HOME:-$HOME/.local/state}/rotate-agent/<label>.state` that does not exist yet.
+Create a fresh empty log with `mktemp "${TMPDIR:-/tmp}/heartbeat.XXXXXX"` and a new
+state path under `${XDG_STATE_HOME:-$HOME/.local/state}/rotate-agent/<label>.state`.
+Arming with Claude Code's tools (other harnesses use their own equivalents):
 
 ```
 Bash({
   run_in_background: true,
   command: "sno heartbeat --interval 5 --max-hours 0 --label rotate-agent-<work> --log \"<LOG>\" \
-    -- rotate-agent-watch --from codex --to claude --threshold-pct 2 --state \"<STATE>\" --cwd \"<checkout>\""
+    -- rotate-agent-watch --from <agent> --seat <A-seat> --threshold-pct 2 --state \"<STATE>\" --cwd \"<checkout>\""
 })
-
 Monitor({
   command: "tail --pid=<from the arm output> -F -n +1 \"<LOG>\"",
   persistent: true,
-  description: "rotate-agent-<work> ticks"
+  description: "rotate-agent ticks"
 })
 ```
 
-`--max-hours 0` matters: a heartbeat stops itself after 24 hours by default, and the quota
-trigger would then never fire on a longer run; give a number of hours instead to bound the watch.
+Cursor has no `Monitor`: run the same `sno heartbeat` command from Cursor's shell and follow the reader
+instruction it prints for a Cursor conversation (the heartbeat skill says how ticks reach Cursor).
 
-Every tick of `rotate-agent-watch` prints one line. Say what it says, then act on the first word:
+`--max-hours 0` removes heartbeat's default 24-hour limit; use a finite value when
+requested. Hermes and OpenClaw instead run one background command per tick:
+`sleep <interval-seconds>; sno heartbeat --label rotate-agent-<work> --max-ticks 1 -- rotate-agent-watch --from <agent> --seat <A-seat> --state <STATE> --cwd <checkout>`.
+Re-arm after each native completion notice. Hermes delivers the notice at the next
+turn boundary; OpenClaw delivers during a turn. OpenClaw's command must run without
+an approval prompt for its completion notice to arrive. Prefer a separate watchman.
 
 | line | meaning | watchman does |
 |---|---|---|
-| `HOLD from=… remaining=N% threshold=T%` | above threshold | nothing |
-| `HOLD receiver-<verdict> …` | threshold crossed but the other vendor is also blocked | nothing; report it — the run will end at refusal and needs resume from what is on disk |
-| `HOLD unreadable …` | quota could not be read on this tick | nothing; three in a row is worth reporting |
-| `ROTATE from=X to=Y remaining=N% …` | threshold crossed, receiver has headroom, state file written | send the order (below); keep the heartbeat running |
-| `DONE rotated <time> …` | a ROTATE already fired | keep waiting for COMPLETE; after COMPLETE, stop the heartbeat if still running |
-| `COMPLETE from=X to=Y seconds=… commits_before=… commits_after=…` | the checkout has a new commit after the order | `sno heartbeat --stop rotate-agent-<work>` |
-| `LATE blocked …` | sender already refused | resume from what is on disk (below); stop the heartbeat |
+| `HOLD from=… remaining=N% threshold=T%` | above threshold | keep watching |
+| `HOLD unreadable …` | sender quota unknown | keep watching; report repeated failures |
+| `HOLD no-candidate …` | no available receiver | sender continues; keep watching |
+| `ROTATE … verdict=… candidates=[…]` | low remaining share, or `wait`/`owner_action` | walk the candidates below |
+| `DONE rotated …` | a real handoff was recorded | wait for COMPLETE |
+| `COMPLETE …` | new commit after the recorded handoff | stop this heartbeat |
 
-The hook fires `ROTATE` once: the state file is the lock. Later ticks print `DONE` until
-the checkout has a new commit, then print `COMPLETE` once. Stop the heartbeat after
-`COMPLETE`, not after `ROTATE`. A receiver that never commits leaves the heartbeat running
-until its `--max-hours` limit; choose that limit when arming.
-To re-arm for a second rotation (the receiver may run out too), use a new label and a new
-state path with the seats swapped.
+### Walk every candidate in order
 
-Only the `--from` vendor is read on ordinary ticks. The `--to` vendor is read once, at the
-moment of crossing, so the rate-limited side is not polled.
+Read `candidates[]`, not just `chosen`. Keep the original model and raw provider from
+the triggering line's `sender` object (`--pick`'s `from`). Log each failed operation, agent, model, seat and error;
+then take the next candidate. `go`, `short_only` and `unread` candidates are available.
 
-### The order
-
-Seat on tmux:
+For `in_place:true`, run:
 
 ```
-sno reach call <A-seat> "ROTATE: hand off to <to-vendor> now. Remaining quota <N>%. Run the handoff skill; receiver kind <to-vendor>, spawned --window (a tmux seat, never an ACP seat: the non-terminal Agent Client Protocol seat that `sno reach spawn` uses without `--window`; see the reach skill); same checkout; report to <owner session>." --expect HANDOFF_RELEASED --timeout 300
+rotate-agent-switch --agent <agent> --seat <A-seat> --model <M> --provider <P> --original-model <O> --original-provider <OP>
 ```
 
-If the seat runs in another terminal host, send the same text there, press Enter, and read its
-new output (repeating a bounded number of times) for the release line.
+It polls the pane footer every three seconds. The entire first attempt has a
+100-second deadline; recovery starts with a fresh 150-second deadline, shortened
+only if needed to keep the entire operation within 280 seconds. Timed-out commands
+are killed immediately. Each phase prints its elapsed seconds on stderr. Hermes is idle when the last
+15 pane lines contain a line starting with `❯` and no `msg=interrupt`, including
+when the composer shows a rotating suggestion; OpenClaw must show `connected | idle`. It sends
+Hermes `/model M --provider P`, OpenClaw `/model P/M`, Cursor `/model M` through
+`sno reach call <seat> <command> --raw`, never as a queued model command. It waits
+for idle again and calls `continue` with at most 60 seconds. Confirmation requires
+exit status 0 and non-empty reply text; Reach does not return JSON here. Hermes and
+OpenClaw use `rotate-agent-answer-provider --agent <agent> --seat <A-seat> --latest --with-model`
+to read `<provider> <model>` from the last successful Hermes API call or the last
+OpenClaw assistant answer's runtime event. Unanswered background turns do not erase
+that result. Without `--with-model`, output remains the provider only. A switch needs
+a new assistant answer from P and the selected current model. A logged `custom`
+provider also matches a configured custom endpoint name when the answer model is M;
+it never substitutes for openai, openai-codex, codex, chatgpt, anthropic, claude,
+google, gemini, xai, grok, openrouter, deepseek, nvidia, zai, kimi or minimax.
+Only `SWITCH OK` counts.
+Then append `switched <UTC-timestamp> model=<M> vendor=<V>` to the state file.
+This does not stop the watch: the next tick reads the new model, and another
+crossing runs the pick again. Never write `rotated` for an in-place switch.
 
-`HANDOFF_RELEASED` in new output means B holds the task. No release inside the deadline
-means A did not finish the handoff: inspect A's screen; do not send the order twice — a
-second order is a duplicate, not a retry.
+Failure restores O/OP with the same idle, raw command and confirmed-turn procedure.
+`SWITCH FAIL restored=yes` means try the next candidate with the sender still able
+to hand off. `restored=no` means all next-agent candidates use resume from disk.
 
-A seat marked `stale` in `sno reach seats --json` is not proof that its agent is gone: the
-mark only says the record was not refreshed for 15 minutes, and an agent that works without
-sending mail never refreshes it. Before treating A or B as dead, look at the terminal or
-process behind the seat.
+For a next-agent candidate, map `claude-code` to launch kind `claude`, `cursor` to
+`cursor-agent`; the other launch kinds match their ids. Pass `--model M` and the raw
+`--provider P` to `sno reach spawn`, always with `--window`. Reach initializes an
+OpenClaw model while idle before sending its startup context.
 
-## When the window was missed: resume from the progress record
-
-If a tick says `LATE`, or the order gets no release, A is gone. Start B with one command. It points B
-at the progress record A kept with `sno handoff-checkpoint`, so B continues from the record's Next list and
-does not redo what Done lists:
+When A can answer, send the order:
 
 ```
-sno rotate-agent-resume --to <to-vendor> --cwd <checkout> --checkpoint <record> --work <work> --report-to <owner session>
+sno reach call <A-seat> "ROTATE: run the handoff skill now; receiver kind <kind>, model <M>, provider <P>, vendor <V>; spawn --window in the same checkout. Verify the receiver answer vendor before release. Report to <owner session>." --expect HANDOFF_RELEASED --timeout 280
 ```
 
-The command first refuses (`FAIL checkout`) when the record belongs to a different checkout than `--cwd`,
-naming both. It then compares the record with the checkout (`MATCH`, or `DRIFT` lines naming what changed
-after the last checkpoint, which it hands to B to inspect), then runs `sno reach init` and
-`sno reach spawn --window` to put B on a tmux window, and waits for B's fresh `RESUME_ACK` line, not an
-echo of the prompt. Every step prints `OK <step>` or `FAIL <step>: <what> -> <what to do>`; the last
-line of a clean run is `RESUMED seat=<address> verify=MATCH|DRIFT`. A `<work>` label resumes once: a
-second call names the existing seat instead of starting another receiver.
+The handoff skill verifies readiness without writes. Hermes/OpenClaw readiness
+must be attributed using `rotate-agent-answer-provider --agent <agent> --seat <B-seat>
+--receipt <REACH-RECEIPT-id>` with the call's `deliveryReceipt`. No provider or a
+wrong provider fails that candidate before A releases. Claude Code and Codex have
+fixed vendors. Cursor uses the integrated seat's concrete model/vendor reading.
+An uncertain release is not permission to start competing receivers: inspect the
+seat before proceeding. A known start or acknowledgement failure tries the next.
 
-B prints `DONE_<work>` on its own line when every task is done. When a task needs the owner it prints
-`BLOCKED_<work> <reason>` on its own line instead.
-It never prints `DONE_<work>` while any task waits on the owner.
+If the crossing was `wait`/`owner_action`, or restoring A failed, use:
 
-`--window` puts B on a tmux seat, which keeps working and stays readable after every call to it has
-timed out; an ACP seat's work (see the `handoff` skill, step 2) is lost once its caller's `--timeout`
-expires.
+```
+sno rotate-agent-resume --to <agent> --cwd <checkout> --checkpoint <record> --work <work> --model <M> --provider <P> --report-to <owner session>
+```
 
-This is the fallback, not the design: it loses whatever A had half-done since its last checkpoint,
-which is why the working agent runs `sno handoff-checkpoint` after every task.
+Use a distinct work label per candidate attempt. The record must belong to the same
+checkout. `MATCH` means unchanged; `DRIFT` is passed to B to inspect before continuing.
+B reads the whole record and emits fresh `RESUME_ACK` without editing. The script
+checks its answer provider before releasing B to continue; failed acknowledgement
+leaves B paused and logs the failure, so the caller can try the next candidate.
+A missing release receipt needs inspection: B may already own the work.
+The last line on success is `RESUMED seat=<address> verify=MATCH|DRIFT`.
 
-## Five things that stay true
+B prints `DONE_<work>` when finished, or `BLOCKED_<work> <reason>` when the owner is
+needed. It never prints `DONE_<work>` while any task waits on the owner.
+After confirmed transfer append
+`rotated <UTC-timestamp> from=<agent> to=<agent> remaining=<N>% commits=<count>`
+with the count printed by the triggering tick. Only this real handoff ends rotation
+under that state path; another handoff uses a fresh label and state path.
 
-1. **The threshold is code, not judgement.** `rotate-agent-watch` decides; the watchman relays.
-2. **Never rotate on a blind read.** `unknown` and `needs_auth` hold; a percentage that cannot
-   be shown current is not a percentage.
-3. **Never hand to a vendor that is also out.** The receiver is checked at the crossing.
-4. **Once.** The state file makes a second `ROTATE` impossible under the same label.
-5. **Vendor names are seats, not sides.** Nothing here assumes which vendor is which.
+If every candidate fails, report `HOLD no-candidate`; A continues when still able.
+Do not make a blind read or a changed model name into success. Hermes provider
+comes from the last successful API call in the receipt's turn span, not a subsequent
+background notice; OpenClaw comes from the runtime provider of that answer in its
+session export. Unknown attribution is failure, and independent work continues.

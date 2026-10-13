@@ -50,24 +50,25 @@ ok 'usage: no arguments and --help exit 0, wrong input exits 2'
 status="$(run run --since 2026-09-20 --stats "$root/stats.jsonl" --findings "$root/findings.jsonl")"
 [[ "$status" == 0 ]] || fail "report exits 0 (got $status)"
 has 'Reviews started: 5, finished: 4, refused: 1, never finished: 1' || fail 'counts of started, finished, refused and never finished'
-has '  model-a: runs 2, high 2, medium 1, fix-now 2, debt 1' || fail 'model-a totals (old run and refused run excluded)'
-has '  model-b: runs 1, high 3, medium 0, fix-now 3, debt 0' || fail 'model-b totals (the run that never finished is not counted)'
-has '  unknown (older records): runs 1, high 1, medium 0, fix-now 0, debt 0' || fail 'an older-format line is counted under its own name'
+has 'By reviewer model: model-a 2 runs (fix-now 2, high 2, medium 1); model-b 1 runs (fix-now 3, high 3, medium 0); unknown (older records) 1 runs (fix-now 0, high 1, medium 0)' || fail 'per-model totals on one line (old run, refused run and the run that never finished excluded; an older-format line under its own name)'
 has 'Verdicts: needs-attention 3, approve 1' || fail 'verdict counts'
-has 'Two brains (who found the problems):' || fail 'the two-brains block exists'
-has '  Mutual review (the other model checks the work; all peer-review records): reviews 4, fix-now 5, high 6, medium 1' || fail 'mutual review totals: every review in the window'
-has '  Self-check (an agent finds its own error in its own conversation): not measured by run; use: sno catch-report self' || fail 'the self-check line points at sno catch-report self'
-has 'Mutual review found 5 problems that had to be fixed now and 6 high-severity findings.' || fail 'the headline sentence'
-[[ "$(sed -n 2p "$root/out")" == 'Two brains (who found the problems):' ]] || fail 'the two-brains block comes first, right after the title'
+[[ "$(sed -n 2p "$root/out")" == 'Mutual review found 5 problems that had to be fixed now and 6 high-severity findings.' ]] || fail 'the headline sentence comes first, right after the title'
 ok 'review counts, per-model totals and verdicts equal the hand-computed values'
 
 has 'Findings first seen since 2026-09-20: 6 (ruled on 3: accepted 1, rejected 1, superseded 1; undecided 3)' || fail 'ledger counts of ruled and undecided findings'
 has 'Most fix-now:' || fail 'a most fix-now list exists'
-[[ "$(grep -A1 '^Most fix-now:' "$root/out" | tail -n1)" == '  3  2026-09-27  b.ts, b2.ts  /r/b.md' ]] || fail 'the top review is the one with fix-now 3, with its targets and report'
-[[ "$(grep -A2 '^Most fix-now:' "$root/out" | tail -n1)" == '  2  2026-09-25  a.ts  /r/a.md' ]] || fail 'second is fix-now 2'
+[[ "$(grep -A1 '^Most fix-now:' "$root/out" | tail -n1)" == '  3  2026-09-27  b.ts, b2.ts' ]] || fail 'the top review is the one with fix-now 3, with its targets'
+[[ "$(grep -A2 '^Most fix-now:' "$root/out" | tail -n1)" == '  2  2026-09-25  a.ts' ]] || fail 'second is fix-now 2'
 ! grep -q 'old.ts' "$root/out" || fail 'a review before the window is not listed'
-has 'These records do not say' || fail 'the limits line is printed'
+has 'Not counted here: who wrote the code, or bugs an agent caught in its own work (see: sno catch-report self' || fail 'the limits line points at sno catch-report self'
 ok 'findings ledger counts, top reviews and the limits line'
+
+# a review of many files lists the first two and counts the rest
+printf '{"ts":"2026-09-25T10:05:00+00:00","event":"end","run":"m1","targets":["a.ts","b.ts","c.ts","d.ts"],"report":"/r/m.md","verdict":"needs-attention","fix_now":4,"high":0,"medium":0}\n' >"$root/many.jsonl"
+status="$(run run --since 2026-09-20 --stats "$root/many.jsonl" --findings "$root/findings.jsonl")"
+[[ "$(grep -A1 '^Most fix-now:' "$root/out" | tail -n1)" == '  4  2026-09-25  a.ts, b.ts and 2 more' ]] || fail 'a review of four files shows two and counts two more'
+! grep -q '/r/m.md' "$root/out" || fail 'the report path is not printed'
+ok 'a review of many files is one short line'
 
 # a narrower window
 status="$(run run --since 2026-09-27 --stats "$root/stats.jsonl" --findings "$root/findings.jsonl")"
@@ -157,7 +158,7 @@ status="$(run self --limit abc)"; [[ "$status" == 2 ]] || fail 'a --limit that i
 before="$(find "$root/claude" "$root/codex" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum)"
 status="$(srun)"
 [[ "$status" == 0 ]] || fail "self exits 0 (got $status)"
-has 'Looked at: 2 sessions (claude 1, codex 1)' || fail 'two sessions since the cutoff, the old one is not read'
+has 'Looked at: 2 sessions (claude 1, codex 1, cursor 0)' || fail 'two sessions since the cutoff, the old one is not read'
 has 'Candidate moments (an agent reacting to a failure or admitting an error): 7; judged: 7' || fail 'seven candidate moments: four in claude, three in codex (an English admission, a Chinese admission, and a reaction ten steps after a failure); thinking blocks and passing outputs give none'
 has '  found by the agent itself: 6' || fail 'three were found by the agent itself, one of them in German with no admission phrase'
 has '  pointed out by the user or a reviewer: 1' || fail 'one was pointed out by the user'
@@ -177,10 +178,43 @@ has 'Estimate for all 7 candidate moments: about' || fail 'a sample prints an es
 status="$(srun --limit 4)"
 has 'judged: 4 (limit 4)' || fail 'the limit is used in full: 7 candidates with limit 4 judges 4, not fewer'
 status="$(srun --agent codex)"
-has 'Looked at: 1 sessions (claude 0, codex 1)' && has 'judged: 3' || fail '--agent codex reads only codex conversations'
+has 'Looked at: 1 sessions (claude 0, codex 1, cursor 0)' && has 'judged: 3' || fail '--agent codex reads only codex conversations'
 status="$(srun --list)"
 grep -Eq '^  SELF  claude  s1.jsonl: .*introduced a bug in the parser' "$root/out" && grep -Eq '^  PROMPTED  claude  s1.jsonl: .*login redirect' "$root/out" && grep -Eq '^  SELF  codex  rollout-s2.jsonl: .*empty case' "$root/out" && grep -Eq '^  SELF  claude  s1.jsonl: Der Test ist rot' "$root/out" || fail '--list shows each moment with the model verdict, the agent and the conversation'
 ok '--limit and --agent bound the work'
+
+# Cursor conversations: only transcripts under agent-transcripts are read, and cursor-agent judges them.
+cat >"$root/bin/cursor-agent" <<'SH'
+#!/usr/bin/env bash
+printf 'CALL %s\n' "$*" >>"$FAKE_ROOT/cursor-calls"
+printf '%s|%s|%s\n' "$HOME" "$PWD" "$(readlink "$HOME/.local/share")" >>"$FAKE_ROOT/cursor-homes"
+sleep 300 >/dev/null 2>&1 &
+printf '%s\n' "$!" >>"$FAKE_ROOT/cursor-children"
+prompt="$(cat)"
+[[ -n "$prompt" ]] || exit 1
+echo SELF
+SH
+chmod +x "$root/bin/cursor-agent"
+cr() { jq -cn --arg role "$1" --arg text "$2" '{role: $role, message: {content: [{type: "text", text: $text}]}}'; }
+mkdir -p "$root/cursor/proj-a/agent-transcripts/c1" "$root/cursor/proj-a/notes"
+{
+  cr user $'<timestamp>Thursday, Oct 1, 2026, 9:00 AM (UTC-7)</timestamp>\n<user_query>\nfix the import\n</user_query>'
+  cr assistant 'My mistake: I broke the import path in my earlier edit. Fixing it now.'
+  jq -cn '{type: "turn_ended", status: "success"}'
+} >"$root/cursor/proj-a/agent-transcripts/c1/c1.jsonl"
+cr assistant 'My mistake, but this file is not a conversation transcript.' >"$root/cursor/proj-a/notes/other.jsonl"
+status="$(run self --since 2026-09-20 --cursor-dir "$root/cursor" --agent cursor --list --stats "$root/stats.jsonl")"
+[[ "$status" == 0 ]] && has 'Looked at: 1 sessions (claude 0, codex 0, cursor 1)' && has '  found by the agent itself: 1' || fail '--agent cursor reads only Cursor transcripts and counts the judged moment'
+grep -Eq '^  SELF  cursor  c1.jsonl: My mistake: I broke the import path' "$root/out" || fail '--list names the Cursor moment and its conversation'
+[[ "$(cat "$root/cursor-calls")" == 'CALL -p --trust --mode ask' ]] || fail 'the Cursor moment goes to cursor-agent once, in read-only print mode with --trust'
+IFS='|' read -r judge_home judge_cwd judge_share <"$root/cursor-homes"
+[[ "$judge_home" != "$HOME" && "$judge_share" == "$HOME/.local/share" && -z "$(ls -A "$judge_cwd" 2>/dev/null)" && ! -e "$judge_home" ]] ||
+  fail 'cursor-agent runs with a throwaway home linking only its install, from an empty folder, and the home is gone afterwards'
+! kill -0 "$(head -1 "$root/cursor-children")" 2>/dev/null || fail 'a process cursor-agent leaves running is killed with its group'
+mkdir -p "$root/ide-only"; printf '#!/usr/bin/env bash\nexit 0\n' >"$root/ide-only/cursor"; chmod +x "$root/ide-only/cursor"
+status="$(PATH="$root/ide-only:/usr/bin:/bin" "$command_path" self --since 2026-09-20 --cursor-dir "$root/cursor" --agent cursor --stats "$root/stats.jsonl" >"$root/out" 2>"$root/err"; echo $?)"
+grep -q '^not judged: cursor -> the cursor-agent command is not installed' "$root/out" || fail 'the IDE launcher alone is not the Cursor CLI: the missing cursor-agent is named'
+ok '--agent cursor reads Cursor transcripts and judges them with cursor-agent'
 
 # many candidates (far more than a pipe buffer) with a small limit: the report must still print
 mkdir -p "$root/big/proj"

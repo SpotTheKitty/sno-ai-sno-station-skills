@@ -6,8 +6,11 @@ import { fileURLToPath } from 'node:url';
 export interface Config {
   claude_home: string;
   codex_home: string;
+  hermes_home: string;
+  openclaw_home: string;
   claude_root: string;
   codex_root: string;
+  cursor_root: string;
   project_names: Record<string, string>;
   time_zone: string;
 }
@@ -33,10 +36,8 @@ export const reflectionFiles = {
 export const commands = ['run', 'accept', 'reject', 'tbd', 'recall', 'lesson', 'status', 'install-hooks'];
 export const messages = {
   later: 'command not implemented',
-  noHeartbeat: 'no heartbeat',
-  noTerminal: 'no terminal run',
   redacted: '[REDACTED]',
-  help: 'Usage: sno rem-reflect run [--now <timestamp>] [--trigger timer|manual]|accept|reject|tbd|recall [--first-message]|lesson|status|install-hooks',
+  help: 'Usage: sno rem-reflect run [--now <timestamp>] [--trigger timer|manual]|accept|reject|tbd|recall [--first-message]|recall install|lesson|status|install-hooks',
 };
 
 export function isObject(value: unknown): value is Record<string, unknown> {
@@ -82,8 +83,11 @@ export function defaultConfig(home: string = homedir()): Config {
   const codex_home = join(home, '.codex');
   return {
     claude_home, codex_home,
+    hermes_home: process.env.HERMES_HOME ?? join(home, '.hermes'),
+    openclaw_home: process.env.OPENCLAW_STATE_DIR ?? join(home, '.openclaw'),
     claude_root: join(claude_home, 'projects'),
     codex_root: join(codex_home, 'sessions'),
+    cursor_root: join(home, '.cursor', 'projects'),
     project_names: {},
     time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   };
@@ -97,6 +101,17 @@ export function validateConfig(value: unknown): Config {
     if (typeof field !== 'string' || !field.trim()) throw new Error(`config.json: invalid ${key}`);
     if (key !== 'time_zone' && !isAbsolute(field)) throw new Error(`config.json: ${key} must be absolute`);
     result[key] = field;
+  }
+  // Existing published stores have no entries for the newly supported agents.
+  for (const key of ['hermes_home', 'openclaw_home'] as const) {
+    const field = value[key] ?? result[key];
+    if (typeof field !== 'string' || !isAbsolute(field)) throw new Error(`config.json: ${key} must be absolute`);
+    result[key] = field;
+  }
+  // Stores written before Cursor support have no cursor_root.
+  if (value.cursor_root !== undefined) {
+    if (typeof value.cursor_root !== 'string' || !isAbsolute(value.cursor_root)) throw new Error('config.json: cursor_root must be absolute');
+    result.cursor_root = value.cursor_root;
   }
   if (!isObject(value.project_names)) throw new Error('config.json: invalid project_names');
   for (const [directory, name] of Object.entries(value.project_names)) {
@@ -130,7 +145,7 @@ export function isWithin(parent: string, child: string): boolean {
 }
 
 export function skillRoots(config: Config): string[] {
-  return [join(config.claude_home, 'skills'), join(config.codex_home, 'skills')];
+  return [config.claude_home, config.codex_home, config.hermes_home, config.openclaw_home].map(home => join(home, 'skills'));
 }
 
 export function validateRoots(config: Config, store: string): void {

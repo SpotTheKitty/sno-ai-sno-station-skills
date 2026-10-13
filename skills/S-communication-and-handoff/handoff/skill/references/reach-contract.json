@@ -9,7 +9,9 @@
     "spawn": [
       "--as",
       "--window",
-      "--cwd"
+      "--cwd",
+      "--model",
+      "--provider"
     ],
     "register": [
       "--as",

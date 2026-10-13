@@ -13,7 +13,7 @@ export function lessonProject(appliesTo: unknown, config: Config): string | unde
 export function observe(eventType: string, fields: Record<string, string | number | boolean>,
   logPath: string = join(storePath(), reflectionFiles.runLog)): void {
   try {
-    const agent = process.env.CLAUDECODE !== undefined ? 'claude-code' : 'codex';
+    const agent = process.env.CURSOR_AGENT !== undefined ? 'cursor' : process.env.CLAUDECODE !== undefined ? 'claude-code' : 'codex';
     execFileSync('sno', ['observe', 'append', eventType, `--agent=${agent}`,
       ...Object.entries(fields).map(([key, value]) => `--${key}=${value}`)], { stdio: 'ignore' });
   } catch (error) {

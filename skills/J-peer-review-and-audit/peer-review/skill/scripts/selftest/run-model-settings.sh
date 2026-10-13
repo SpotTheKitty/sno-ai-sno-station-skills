@@ -7,6 +7,16 @@ review="${REVIEW:-$here/../run-adversarial-review.sh}"
 root="$(mktemp -d)"
 trap 'rm -r -- "$root"' EXIT
 mkdir -p "$root/bin" "$root/tmp" "$root/config with spaces/sno" "$root/absent"
+cat >"$root/bin/sno" <<'STUB'
+#!/usr/bin/env bash
+[[ "${1:-}" == subscription-quota-check ]] || exit 0
+if [[ "$*" == *'--from codex'* ]]; then
+    printf '%s\n' '{"ok":true,"from":{"vendor":"openai"},"candidates":[{"agent":"claude-code","vendor":"anthropic"}]}'
+else
+    printf '%s\n' '{"ok":true,"from":{"vendor":"anthropic"},"candidates":[{"agent":"codex","vendor":"openai"}]}'
+fi
+STUB
+chmod +x "$root/bin/sno"
 printf 'export const value = 1;\n' >"$root/target.ts"
 cat >"$root/bin/codex" <<'STUB'
 #!/usr/bin/env bash
@@ -109,7 +119,7 @@ if result == 'ok':
     assert end['outcome'] == 'success', end
     assert 'Wrong total' in (root / 'report.md').read_text()
 else:
-    assert sys.argv[3] == '6', sys.argv
+    assert sys.argv[3] == '2', sys.argv
     assert end['outcome'] == 'failed', end
     assert end['failure'] == ('empty' if result == 'empty' else 'exit:3'), end
 PY

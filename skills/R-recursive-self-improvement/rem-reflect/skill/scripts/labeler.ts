@@ -132,7 +132,7 @@ export function labelHalf(store: string, runId: string, half: Harness | null, cl
     .sort((a, b) => b.priority - a.priority).map(item => item.trace);
   const available = new Map<Cli, boolean>();
   for (const trace of pending) {
-    const selectedCli: Cli = cli ?? (trace.agent_id === 'codex' ? 'codex' : 'claude');
+    const selectedCli: Cli = cli ?? (trace.agent_id === 'claude-code' ? 'claude' : trace.agent_id);
     const key = traceKey(trace);
     const path = targets.get(key);
     if (!path) throw new Error(message('rawPathMissing', { key }));

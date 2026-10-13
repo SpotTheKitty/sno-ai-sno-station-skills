@@ -13,7 +13,7 @@ export interface EligiblePool {
 export function eligibleTraces(traces: readonly Trace[], now: number): EligiblePool {
   const newest = traces.filter(trace => !traces.some(other => sameSession(trace, other) && other.version > trace.version));
   const selected = new Set(newest);
-  const halves: EligiblePool['halves'] = { 'claude-code': [], codex: [] };
+  const halves: EligiblePool['halves'] = { 'claude-code': [], codex: [], hermes: [], openclaw: [], cursor: [] };
   const expired: Trace[] = [];
   for (const trace of newest) {
     if (trace.source_mtime <= now - THREE_DAYS) expired.push(trace);

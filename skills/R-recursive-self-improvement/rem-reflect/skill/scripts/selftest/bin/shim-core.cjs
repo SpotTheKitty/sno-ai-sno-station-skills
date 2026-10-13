@@ -2,10 +2,10 @@
 // Test fixture. A stand-in for the real `claude` and `codex` CLIs, spawned by the loop
 // through the real RealBackend during the fixture journey and the self-test. It is
 // deterministic and stateless: it answers only preflight and own-CLI filter prompts. It reads
-// its login from the isolated directory selected by CLAUDE_CONFIG_DIR / CODEX_HOME and writes
-// one session file into that directory on every turn —
-// so a turn's session lands under .loop-home when the loop isolates it, and in the harvest root when
-// the isolation is dropped (the planted defect). Optionally records every exec for the
+// its login from the directory selected by CLAUDE_CONFIG_DIR / CODEX_HOME and, like the real CLI,
+// saves one session file there on every turn unless told not to (--no-session-persistence for claude,
+// --ephemeral for codex) — so a turn's session lands in the harvest root when the loop drops those
+// flags (the planted defect). Optionally records every exec for the
 // allowlist check in EXEC_LOG. Plain CommonJS so it runs as a bare `node <file>` with
 // no compile step and no dependency on the .ts loader.
 const fs = require('node:fs');
@@ -66,8 +66,11 @@ module.exports = function main(cli) {
   // A CLI that is not logged in exits non-zero; the loop's preflight then degrades that half.
   const cred = cli === 'claude' ? '.credentials.json' : 'auth.json';
   if (!fs.existsSync(path.join(configDir(cli), cred))) { process.stderr.write('Not logged in\n'); process.exit(1); }
-  // Every turn writes one session file into the isolated (or, under the defect, the real) home.
-  try { writeSession(cli); } catch (e) { process.stderr.write(`shim session write failed: ${String(e)}\n`); }
+  // A turn saves its session unless the loop turned saving off.
+  const unsaved = process.argv.includes(cli === 'claude' ? '--no-session-persistence' : '--ephemeral');
+  if (!unsaved) {
+    try { writeSession(cli); } catch (e) { process.stderr.write(`shim session write failed: ${String(e)}\n`); }
+  }
   // Preflight is an exact one-word health check; all other calls must be local filtering.
   if (input === 'reply with ok') {
     process.stdout.write('ok'); process.exit(0);

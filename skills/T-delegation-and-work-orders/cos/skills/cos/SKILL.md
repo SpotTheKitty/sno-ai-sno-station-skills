@@ -462,7 +462,7 @@ The core holds identity, the iron rules, the decision discipline (when to act, w
 may settle it, the circuit breaker), the standing laws, the roster, and the
 verify→digest→card procedure that runs every cycle. Three overlays, split by **what each
 may do that the others may not**. Invoke through the runtime skill system (Claude: the
-Skill tool; Codex: `$cos-<name>`) — never work a situation from a remembered summary:
+Skill tool; Codex: `$cos-<name>`; Cursor: `/cos-<name>`) — never work a situation from a remembered summary:
 
 | Situation | Invoke | Its exclusive authority |
 |---|---|---|

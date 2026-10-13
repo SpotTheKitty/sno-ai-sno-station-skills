@@ -92,7 +92,7 @@ export function buildCloudBatch(store: string, config: Config, runId: string, re
   labels: ReadonlyMap<string, Label>, includeHistory: boolean) {
   const selectedSessions = new Set(retained.map(trace => trace.session_id));
   const ledger = readLedger(store);
-  const halves = (['claude-code', 'codex'] as const).map(harness => ({
+  const halves = (['claude-code', 'codex', 'hermes', 'openclaw', 'cursor'] as const).map(harness => ({
     harness,
     sessions: retained.filter(trace => trace.agent_id === harness).map(trace => {
       const label = labels.get(traceKey(trace));
@@ -154,7 +154,21 @@ export function sendCloudBatch(store: string, batch: {
     throw new Error('cloud batch: response does not match the pending run');
   }
   writeJson(join(directory, 'cloud-response.json'), response);
+  slimAnsweredRequest(requestPath);
   return response as unknown as CloudResponse;
+}
+
+// Once the cloud has answered, later nights read only the uploaded skill catalogue and which session versions were
+// sent; the session text was a copy for the upload and would otherwise stay in the store for every night.
+export function slimAnsweredRequest(path: string): void {
+  const request: unknown = JSON.parse(readFileSync(path, 'utf8'));
+  if (!isObject(request) || !Array.isArray(request.halves)) return;
+  const slim = { schema_version: request.schema_version, run_id: request.run_id, catalogue: request.catalogue,
+    halves: request.halves.map(half => isObject(half) && Array.isArray(half.sessions)
+      ? { harness: half.harness, sessions: half.sessions.map(session => isObject(session)
+        ? { session_id: session.session_id, version: session.version } : session) }
+      : half) };
+  if (JSON.stringify(slim) !== JSON.stringify(request)) writeJson(path, slim);
 }
 
 export function applyCloudHistoryLinks(store: string, links: readonly unknown[]): Set<string> {
@@ -183,7 +197,7 @@ export function applyCloudResponse(store: string, config: Config, response: Clou
   const judged = new Set(readLedger(store).filter(row => row.type === 'lesson-judgment')
     .map(row => `${row.trace_id}::${row.lesson_id}`));
   for (const half of response.halves) {
-    if (!isObject(half) || !['claude-code', 'codex'].includes(String(half.harness))
+    if (!isObject(half) || !['claude-code', 'codex', 'hermes', 'openclaw', 'cursor'].includes(String(half.harness))
       || !Array.isArray(half.pages) || !Array.isArray(half.lessons) || !Array.isArray(half.proposals)
       || !Array.isArray(half.read_judgments)) {
       throw new Error('cloud batch: invalid half');

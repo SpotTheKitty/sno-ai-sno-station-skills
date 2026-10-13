@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Read the provider of one answered turn, never the session's configured fallback.
+set -Eeuo pipefail
+usage() {
+  printf 'usage: rotate-agent-answer-provider --agent hermes|openclaw [--seat <address> --receipt <REACH-RECEIPT-id> | --seat <address> --latest | --session <id> | --session-key <key>] [--with-model]\n' >&2
+  exit "${1:-2}"
+}
+AGENT='' SEAT='' RECEIPT='' SESSION='' SESSION_KEY='' LATEST=false WITH_MODEL=false
+while (( $# )); do
+  case "$1" in
+    --agent|--seat|--receipt|--session|--session-key)
+      (( $# >= 2 )) || usage
+      [[ -n "$2" ]] || usage
+      case "$1" in
+        --agent) AGENT="$2" ;; --seat) SEAT="$2" ;; --receipt) RECEIPT="$2" ;;
+        --session) SESSION="$2" ;; --session-key) SESSION_KEY="$2" ;;
+      esac
+      shift 2 ;;
+    --latest) LATEST=true; shift ;;
+    --with-model) WITH_MODEL=true; shift ;;
+    -h|--help) usage 0 ;;
+    *) usage ;;
+  esac
+done
+[[ "$AGENT" =~ ^(hermes|openclaw)$ ]] || usage
+[[ "$LATEST" == false || ( -n "$SEAT" && -z "$RECEIPT" && -z "$SESSION" && -z "$SESSION_KEY" ) ]] || usage
+if [[ -n "$SEAT" ]]; then
+  [[ -n "$RECEIPT" || "$LATEST" == true ]] || usage
+  record="${SNO_REACH_STATE_ROOT:-$HOME/.local/state/sno-reach}/$SEAT/transcript.json"
+  if [[ "$AGENT" == hermes ]]; then
+    SESSION="$(jq -er '.session_id | select(type == "string" and length > 0)' "$record")" || exit 1
+  else
+    SESSION_KEY="$(jq -er '.session_key | select(type == "string" and length > 0)' "$record")" || exit 1
+  fi
+fi
+if [[ "$AGENT" == hermes ]]; then
+  [[ -n "$SESSION" ]] || usage
+  logs=()
+  for log in "${HERMES_HOME:-$HOME/.hermes}/logs/agent.log.1" "${HERMES_HOME:-$HOME/.hermes}/logs/agent.log"; do
+    [[ ! -f "$log" ]] || logs+=("$log")
+  done
+  (( ${#logs[@]} > 0 )) || exit 1
+  awk -v session="[$SESSION]" -v receipt="$RECEIPT" -v latest="$LATEST" -v with_model="$WITH_MODEL" '
+    index($0, session) && /agent.turn_context: conversation turn:/ {
+      if (latest == "true") next
+      if (active) { active=0; finished=1 }
+      if (!finished && (receipt == "" || index(substr($0, index($0, "msg=")), receipt))) active=1
+      next
+    }
+    (latest == "true" || active) && index($0, session) && /agent.conversation_loop: API call #[0-9]+:/ {
+      model=""
+      if (match($0, /model=[^[:space:]]+/)) model=substr($0, RSTART+6, RLENGTH-6)
+      if (match($0, /provider=[^[:space:]]+/)) provider=substr($0, RSTART+9, RLENGTH-9)
+    }
+    END {
+      if (provider == "" || (with_model == "true" && model == "")) exit 1
+      if (with_model == "true") print provider " " model; else print provider
+    }
+  ' "${logs[@]}"
+else
+  [[ -n "$SESSION_KEY" ]] || usage
+  [[ "$SESSION_KEY" == agent:main:* ]] || SESSION_KEY="agent:main:$SESSION_KEY"
+  tmp="$(mktemp -d)"
+  trap 'rm -rf -- "$tmp"' EXIT
+  timeout 120 openclaw sessions export-trajectory --session-key "$SESSION_KEY" --json --workspace "$tmp" >/dev/null || exit 1
+  [[ -f "$tmp/events.jsonl" ]] || exit 1
+  jq -ser --arg receipt "$RECEIPT" --argjson latest "$LATEST" --argjson with_model "$WITH_MODEL" '
+    reduce .[] as $e ({active:false, done:false, current:null, answer:null};
+      ($e.type // "") as $type |
+      if ($type != "assistant.message" and $type != "user.message" and ($e.provider // $e.data.provider) != null)
+      then .current={provider:($e.provider // $e.data.provider), model:($e.modelId // $e.model // $e.data.modelId // $e.data.model)} else . end |
+      if $type == "user.message" then
+        if $latest then .active=true
+        elif .active then .active=false | .done=true
+        elif (.done | not) and ($receipt == "" or ($e | tojson | contains($receipt))) then .active=true
+        else . end
+      elif $type == "assistant.message" and .active then .answer=.current
+      else . end)
+    | .answer | select(.provider | type == "string" and length > 0)
+    | if $with_model then select(.model | type == "string" and length > 0) | "\(.provider) \(.model)" else .provider end
+  ' "$tmp/events.jsonl"
+fi

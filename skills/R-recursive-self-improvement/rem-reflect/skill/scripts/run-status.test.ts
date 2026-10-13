@@ -77,6 +77,45 @@ test('a run commits under its id; a second run the same day is a no-op with no n
   assert.equal(commits(store).length, after1, 'no-op day adds no commit');
 });
 
+for (const uncommittedSuccess of [false, true]) {
+  test(`run repairs a partial git bootstrap with uncommitted success=${uncommittedSuccess}`, () => {
+    const config = fixtureConfig();
+    const store = tmp('partial-git');
+    mkdirSync(join(store, '.git', 'info'), { recursive: true });
+    writeFileSync(join(store, '.git', 'description'), 'interrupted init\n');
+    const configText = JSON.stringify(config, null, 2) + '\n';
+    writeFileSync(join(store, 'config.json'), configText);
+    const now = new Date('2026-09-08T00:00:00Z');
+    const start = cal(now, 'UTC');
+    if (uncommittedSuccess) writeState(store, { ...emptyState(), last_terminal: { ...start, status: 'success' } });
+    const backend = new FixtureBackend();
+    const result = run(store, now, 'u', backend);
+    assert.equal(result.code, 0, result.lines.join('\n'));
+    assert.doesNotMatch(result.lines.join('\n'), /no-op:/);
+    assert.deepEqual(commits(store), [start.id]);
+    assert.equal(readFileSync(join(store, 'config.json'), 'utf8'), configText);
+    assert.equal(JSON.parse(git(store, ['show', 'HEAD:state.json'])).last_terminal.status, 'success');
+    assert.equal(backend.calls.length, 0, 'empty session roots require no model calls');
+    const again = run(store, now, 'u', backend);
+    assert.match(again.lines.join('\n'), /no-op: .*already succeeded/);
+    assert.deepEqual(commits(store), [start.id]);
+  });
+}
+
+test('an uncommitted successful state does not skip a run in an established store', () => {
+  const config = fixtureConfig();
+  const store = makeStore(config);
+  const originalHead = git(store, ['rev-parse', 'HEAD']).trim();
+  git(store, ['config', 'rem.fixture', 'preserve']);
+  const now = new Date('2026-09-08T00:00:00Z');
+  writeState(store, { ...emptyState(), last_terminal: { ...cal(now, 'UTC'), status: 'success' } });
+  const result = fixtureRun(store, now);
+  assert.equal(result.code, 0, result.lines.join('\n'));
+  assert.doesNotMatch(result.lines.join('\n'), /no-op:/);
+  assert.equal(git(store, ['rev-parse', 'HEAD^']).trim(), originalHead);
+  assert.equal(git(store, ['config', 'rem.fixture']).trim(), 'preserve');
+});
+
 // tolerant parsing; the bad-JSON file climbs to unparseable and stops being retried ---
 function badPending(store: string) {
   const state = readState(store);
@@ -263,4 +302,51 @@ test('a grown session yields v2 covering only the new lines and leaves v1 byte-i
   const v2 = readFileSync(v2path, 'utf8');
   assert.match(v2, /two/); assert.match(v2, /second/);
   assert.doesNotMatch(v2, /"one"/); assert.doesNotMatch(v2, /first/);
+});
+
+// Status: a short block a person can read, non-zero exactly when the nightly review needs attention ---
+test('status reads as a block: never run and no schedule fail with the fix; a run today with a schedule passes; a cut-off run is named', () => {
+  const { config } = env();
+  const store = makeStore(config);
+  const now = new Date('2026-09-10T12:00:00Z');
+  const listed = '--   owner rem-reflect 4242 /tmp/log\n';
+  const never = status(store, now, '', false);
+  assert.equal(never.code, 1);
+  assert.match(never.lines.join('\n'), /Last run {3}never; start one now with: sno rem-reflect run/);
+  assert.match(never.lines.join('\n'), /Schedule {3}off; turn on with: sno heartbeat --interval 24h/);
+  assert.match(never.lines.join('\n'), /Lessons {4}0 accepted · 0 waiting for your yes · 0 rejected/);
+
+  writeState(store, { ...emptyState(), last_terminal: { id: '20260910-0001', date: '2026-09-10', status: 'success' } });
+  git(store, ['commit', '--quiet', '-am', 'run']);
+  const fine = status(store, now, listed);
+  assert.equal(fine.code, 0, fine.lines.join('\n'));
+  assert.match(fine.lines.join('\n'), /Last run {3}2026-09-10 · success · run 20260910-0001/);
+  assert.match(fine.lines.join('\n'), /Schedule {3}on, once a day/);
+
+  atomicWrite(join(store, 'run.lock'), JSON.stringify({ pid: 999_999_999, command: 'run', id: '20260910-0002', journal: null }) + '\n');
+  const cut = status(store, now, listed);
+  assert.equal(cut.code, 1);
+  assert.match(cut.lines.join('\n'), /run 20260910-0002 stopped halfway/);
+  unlinkSync(join(store, 'run.lock'));
+
+  const late = status(store, new Date('2026-09-14T12:00:00Z'), listed);
+  assert.equal(late.code, 1);
+  assert.match(late.lines.join('\n'), /more than two days ago/);
+});
+
+test('status counts the timer sno setup installs as the schedule, and a failed run points at the log that run wrote', () => {
+  const { config } = env();
+  const store = makeStore(config);
+  const now = new Date('2026-09-10T12:00:00Z');
+  writeState(store, { ...emptyState(), last_terminal: { id: '20260910-0001', date: '2026-09-10', status: 'success' } });
+  git(store, ['commit', '--quiet', '-am', 'run']);
+  const timed = status(store, now, '', true);
+  assert.equal(timed.code, 0, timed.lines.join('\n'));
+  assert.match(timed.lines.join('\n'), /Schedule {3}on, once a day/);
+
+  writeState(store, { ...emptyState(), last_terminal: { id: '20260910-0002', date: '2026-09-10', status: 'failed' } });
+  git(store, ['commit', '--quiet', '-am', 'failed run']);
+  const failed = status(store, now, '', true);
+  assert.equal(failed.code, 1);
+  assert.ok(failed.lines.join('\n').includes(join(store, 'staging', '20260910-0002', 'run.log')), failed.lines.join('\n'));
 });

@@ -337,7 +337,7 @@ The PL role is split across this core plus five sub-skills. The core holds
 identity, iron rules, the decision discipline (the Triage Predicate, severity &
 disposition, the circuit breaker), the board, the Reach substrate, and this table. The
 moment a situation below appears, INVOKE the named sub-skill through the runtime
-skill system (Claude: the Skill tool; Codex: `$pl-<name>`) — never work the
+skill system (Claude: the Skill tool; Codex: `$pl-<name>`; Cursor: `/pl-<name>`) — never work the
 situation from a remembered summary of it:
 
 | Situation | Invoke |
@@ -868,7 +868,7 @@ the pl skill's `references/`, regardless of which sub-skill uses them. The sub-s
   ring, `exec-sentinel.sh`, `log-watch.sh`, the executor wall): no cron jobs, no ad-hoc watchers, no
   audit probes — this is conversational discipline, not a system.
 - Every spawned charter executor's first instruction after its mission header is one bare,
-  runtime-correct `deliver` invocation naming the charter (`/deliver <charter>` Claude,
+  runtime-correct `deliver` invocation naming the charter (`/deliver <charter>` Claude and Cursor,
   `$deliver <charter>` Codex). The spawner does not check this line; a wrong or missing one
   launches an executor working outside the charter — verify the line yourself before
   spawning. An operational runner (Iron rule 6) carries no such line.

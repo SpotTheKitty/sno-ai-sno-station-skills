@@ -140,3 +140,28 @@ test('a request holding half of an emoji reaches sno as well-formed JSON text', 
   // the cloud's JSON column refuses NUL, which older proposal signatures and some session text carry
   assert.doesNotMatch(readFileSync(capture, 'utf8'), /\\u0000/);
 });
+
+test('an answered batch keeps only what later nights read, so the store does not grow by the session text every night', t => {
+  // Each night's request kept every uploaded session's text after the cloud answered it (up to ~29 MB a night, never removed).
+  const config = fixtureConfig();
+  const store = makeStore(config);
+  const bin = tmp('sno-bin');
+  const executable = join(bin, 'sno');
+  writeFileSync(executable, [
+    '#!/usr/bin/env node',
+    "const batch = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));",
+    "console.log(JSON.stringify({schema_version:1,run_id:batch.run_id,history_acknowledged:true,history_links:[],halves:[],settings_version:'v1',local:{labeler_input_max_chars:120000,labeler_event_window_lines:60,recall_timeout_ms:5000}}));",
+  ].join('\n') + '\n');
+  chmodSync(executable, 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}:${oldPath ?? ''}`;
+  t.after(() => { if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath; });
+  const catalogue = [{ name: 'heartbeat', path: 'claude/heartbeat/SKILL.md', skill_md: 'name: heartbeat' }];
+  const batch = { schema_version: 1, run_id: '20260921-0100', catalogue, usage_reads: [], outcome_summary: {},
+    halves: [{ harness: 'codex', sessions: [{ session_id: 's1', version: 2, chunks: [{ text: 'secret session text '.repeat(1000) }] }] }] };
+  sendCloudBatch(store, batch);
+  const saved = readFileSync(join(store, 'staging', '20260921-0100', 'cloud-request.json'), 'utf8');
+  assert.doesNotMatch(saved, /secret session text/);
+  assert.deepEqual(JSON.parse(saved), { schema_version: 1, run_id: '20260921-0100', catalogue,
+    halves: [{ harness: 'codex', sessions: [{ session_id: 's1', version: 2 }] }] });
+});

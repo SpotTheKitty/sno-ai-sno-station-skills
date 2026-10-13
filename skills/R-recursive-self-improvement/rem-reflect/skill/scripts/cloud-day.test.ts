@@ -14,6 +14,7 @@ test('daily sharing follows mode, only enhanced reports cloud judgments, and rej
     '#!/usr/bin/env node',
     "const fs = require('node:fs');",
     "const args = process.argv.slice(2).join(' ');",
+    "if (args === 'skills rem-reflect-local-writer') { console.log('Find one lesson worth keeping and answer as JSON.'); process.exit(0); }",
     "if (args !== 'rem judge') { console.error('unexpected sno command: ' + args); process.exit(2); }",
     "const input = fs.readFileSync(0, 'utf8');",
     "fs.writeFileSync(process.env.REM_REQUEST_CAPTURE, input);",

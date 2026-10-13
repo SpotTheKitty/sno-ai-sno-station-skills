@@ -37,7 +37,7 @@ the first non-empty line, and the dispatch names the journey id and the charter 
 **Then the second line depends on which kind of agent this is (core Iron rule 6).**
 For an **executor that authors or edits deliverables and works from a charter**, the next
 non-empty line is exactly one bare skill invocation naming the charter: `/deliver <charter>`
-for Claude, `$deliver <charter>` for Codex, with no task text on that line; a direct worker
+for Claude and Cursor, `$deliver <charter>` for Codex, with no task text on that line; a direct worker
 skill there is an illegal dispatch. When `deliver` is not installed, the entry instruction is
 the one the charter names. The spawner does not check this line; a wrong or missing entry
 launches and the executor starts work outside the charter — verify the line yourself before
@@ -109,7 +109,7 @@ a bare `nohup codex exec`: only the spawner arms the wall, registers the seat an
 `bash "${PL_SKILL_DIR}/scripts/spawn-exec.sh" --journey <j-id> --repo <repo-root>
 --budget-h <wall> --dispatch ai-doc/ACTIVE/PL/dispatch/<id>.md
 --class closure|build|operate --addr executor.<journey>@<host>
-[--runtime codex|claude|hermes|openclaw] [--fence <fence-file>] [--callsign <preclaimed-name>]`
+[--runtime codex|claude|hermes|openclaw|cursor] [--fence <fence-file>] [--callsign <preclaimed-name>]`
 
 **`--addr` IS REQUIRED AND THE SPAWNER REFUSES WITHOUT IT.** It is the
 executor's Reach address, and it is required because an executor nobody can reach is a
@@ -120,12 +120,13 @@ rejects a malformed one at registration and the spawn is refused with it.
 
 `--runtime` selects the coding agent and defaults to `codex`, so a Claude-only setup must pass
 `--runtime claude` on every spawn; `claude` is equally supported. `hermes` and `openclaw` (the Hermes
-Agent and OpenClaw CLIs) are also accepted but cannot resume a session. **A `claude` executor needs one extra step before the launch, or it hangs forever
+Agent and OpenClaw CLIs) and `cursor` (the Cursor CLI, `cursor-agent`, started with `--trust`) are also accepted
+but cannot resume a session. **A `claude` executor needs one extra step before the launch, or it hangs forever
 on a screen nobody sees:** `bash "${PL_SKILL_DIR}/scripts/exec-trust.sh" --repo <the checkout>`.
 A fresh checkout is a directory that runtime has never opened, and it stops on three separate
 first-run screens there; that command answers all three and is safe to re-run.
 The same runtime selects the entry syntax: Codex accepts only a bare `$deliver <charter>`
-line; Claude accepts only the bare `/deliver <charter>` line. Project ids and task
+line; Claude and Cursor accept only the bare `/deliver <charter>` line. Project ids and task
 prose go on following lines.
 
 `--class closure|build|operate` — pass it explicitly on every dispatch. The spawner does

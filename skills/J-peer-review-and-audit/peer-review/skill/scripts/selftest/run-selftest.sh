@@ -24,8 +24,10 @@ trap 'rm -rf -- "$ROOT"' EXIT
 
 tests=0
 failures=0
+selected_cases=" $* "
 check() { # $1 label, rest: command
     local label="$1"; shift
+    [[ "$selected_cases" == '  ' || "$selected_cases" == *" $1 "* ]] || return 0
     tests=$((tests + 1))
     if "$@"; then
         printf 'ok %d - %s\n' "$tests" "$label"
@@ -65,6 +67,22 @@ chmod +x "$ROOT/bin/codex"
 mkdir -p "$ROOT/obsbin"
 cat > "$ROOT/obsbin/sno" <<'OBS'
 #!/usr/bin/env bash
+if [[ "${1:-}" == subscription-quota-check ]]; then
+    if [[ "${REVIEW_REVIEWER:-}" == cursor ]]; then
+        printf '%s\n' '{"ok":true,"from":{"vendor":"anthropic"},"candidates":[{"agent":"cursor","provider":"openai","vendor":"openai"}]}'
+    elif [[ "$*" == *'--from cursor'* ]]; then
+        if [[ "${STUB_CODEX_LOGIN_RC:-0}" == 0 ]]; then
+            printf '%s\n' '{"ok":true,"from":{"vendor":"anthropic"},"candidates":[{"agent":"claude-code","vendor":"anthropic"},{"agent":"codex","vendor":"openai"}]}'
+        else
+            printf '%s\n' '{"ok":true,"from":{"vendor":"openai"},"candidates":[{"agent":"codex","vendor":"openai"},{"agent":"claude-code","vendor":"anthropic"}]}'
+        fi
+    elif command -v codex >/dev/null 2>&1 && [[ "${STUB_CODEX_LOGIN_RC:-0}" == 0 ]]; then
+        printf '%s\n' '{"ok":true,"from":{"vendor":"anthropic"},"candidates":[{"agent":"codex","vendor":"openai"}]}'
+    else
+        printf '%s\n' '{"ok":true,"from":{"vendor":"anthropic"},"candidates":[]}'
+    fi
+    exit 0
+fi
 [[ "${1:-}" == observe ]] || exit 64
 shift
 printf '%s\n' "$*" >>"$OBSERVE_LOG"
@@ -178,9 +196,10 @@ case_event_missing() {
     local rc=0; : > "$OBSERVE_LOG"; REVIEW_ERR="$ROOT/err.txt"
     PATH="$ROOT/bin:/usr/bin:/bin" STUB_MODE=ok run_review "$TARGET" || rc=$?
     unset REVIEW_ERR
-    [[ "$rc" -eq 0 ]] && grep -q '^sno: not found; review.run event not recorded$' "$ROOT/err.txt"
+    [[ "$rc" -eq 2 ]] && has '"event":"refused"' && \
+        grep -q 'cross review was not possible' "$ROOT/err.txt"
 }
-check "tool missing: the review still succeeds and one not-recorded line is printed" case_event_missing
+check "pick tool missing: the review is refused and recorded" case_event_missing
 case_event_broken() {
     local rc=0; REVIEW_ERR="$ROOT/err.txt"
     FAKE_OBSERVE_EXIT=3 STUB_MODE=ok run_review "$TARGET" || rc=$?
@@ -191,7 +210,7 @@ check "tool failing: the review still succeeds and names the event and exit code
 
 check "model settings and default effort reach the Codex CLI" bash "$HERE/run-model-settings.sh"
 
-# ---- reviewer choice: other vendor preferred, same vendor as a labelled fallback
+# ---- reviewer choice: no same-vendor fallback
 cat > "$ROOT/bin/claude" <<'STUB'
 #!/usr/bin/env bash
 [[ "${1:-}" == auth ]] && exit 0    # the wrapper's logged-in probe
@@ -214,13 +233,12 @@ case_cross_vendor_no_header() { # other vendor installed and logged in: used, no
 check "an installed, logged-in other-vendor CLI is the reviewer and the report is not labelled same-vendor" case_cross_vendor_no_header
 
 case_same_vendor_not_logged_in() { # other CLI installed but logged out
-    local rep="$ROOT/sv-loggedout.md"
-    STUB_CODEX_LOGIN_RC=1 sv_run "$rep" || return 1
-    [[ "$(head -1 "$rep")" == 'Reviewer: same-vendor review'* ]] || return 1
-    grep -q 'stub-claude-report' "$rep" || return 1
-    has '"outcome":"success"'
+    local rep="$ROOT/sv-loggedout.md" rc=0
+    STUB_CODEX_LOGIN_RC=1 sv_run "$rep" || rc=$?
+    [[ "$rc" -eq 2 && ! -s "$rep" ]] || return 1
+    has '"event":"refused"'
 }
-check "a logged-out other CLI falls back to a same-vendor review labelled on the first line" case_same_vendor_not_logged_in
+check "a logged-out other CLI refuses instead of reviewing on the author's vendor" case_same_vendor_not_logged_in
 
 path_without_reviewers() { # $PATH minus every directory that holds codex or claude
     local d out="" IFS=:
@@ -228,27 +246,95 @@ path_without_reviewers() { # $PATH minus every directory that holds codex or cla
     printf '%s' "${out%:}"
 }
 case_same_vendor_other_missing() { # other CLI not installed at all
-    local rep="$ROOT/sv-missing.md" clean_path
+    local rep="$ROOT/sv-missing.md" clean_path rc=0
     clean_path="$(path_without_reviewers)"
     mkdir -p "$ROOT/bin-claude-only"; cp "$ROOT/bin/claude" "$ROOT/bin-claude-only/claude"
-    PATH="$ROOT/bin-claude-only:$clean_path" sv_run "$rep" || return 1
-    [[ "$(head -1 "$rep")" == 'Reviewer: same-vendor review'* ]] && grep -q 'stub-claude-report' "$rep"
+    PATH="$ROOT/bin-claude-only:$clean_path" sv_run "$rep" || rc=$?
+    [[ "$rc" -eq 2 && ! -s "$rep" ]] && has '"event":"refused"'
 }
-check "a missing other-vendor CLI never refuses: the caller's own CLI reviews and says so" case_same_vendor_other_missing
+check "a missing other-vendor CLI refuses without producing a report" case_same_vendor_other_missing
 
 case_no_cli_at_all() { # neither CLI installed: one clear error, exit 2
     local rc=0 err="$ROOT/nocli.err"
     PATH="$(path_without_reviewers)" REVIEW_CALLER=claude-code STATS_FILE="$ROOT/ledger-nocli.jsonl" \
         bash "$REVIEW" "$TARGET" >/dev/null 2>"$err" || rc=$?
-    [[ "$rc" -eq 2 ]] && grep -q 'neither the .codex. nor the .claude. CLI is installed and logged in' "$err"
+    [[ "$rc" -eq 2 ]] && grep -q 'cross review was not possible' "$err"
 }
 check "with neither CLI installed the wrapper exits 2 with one clear message" case_no_cli_at_all
+
+# ---- Cursor: as the caller, auto-detected, and as a named reviewer ----------
+cat > "$ROOT/bin/cursor-agent" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$CURSOR_CAPTURE.args"
+printf '%s|%s|%s|%s\n' "$HOME" "$PWD" "$(readlink "$HOME/.local/share")" "$(cat "$HOME/.config/cursor/auth.json" 2>/dev/null)" > "$CURSOR_CAPTURE.env"
+sleep 300 >/dev/null 2>&1 &
+printf '%s\n' "$!" > "$CURSOR_CAPTURE.child"
+cat > "$CURSOR_CAPTURE.stdin"
+if [[ "${STUB_CURSOR:-ok}" == error ]]; then printf '{"type":"result","is_error":true,"result":"boom"}\n'; exit 0; fi
+printf '{"type":"result","subtype":"success","is_error":false,"result":"Verdict: approve\\n\\nFindings: none\\n\\nstub-cursor-report\\n"}\n'
+STUB
+chmod +x "$ROOT/bin/cursor-agent"
+export CURSOR_CAPTURE="$ROOT/cursor"
+cursor_run() { # $1 = report path; extra env from the caller
+    ledger="$ROOT/ledger-cursor-$RANDOM.jsonl"; : > "$ledger"; : > "$OBSERVE_LOG"
+    STATS_FILE="$ledger" REVIEW_OUTPUT_FILE="$1" REVIEW_AUTHOR_MODEL="${REVIEW_AUTHOR_MODEL:-anthropic/claude-author}" CODEX_EFFORT=stub-effort MAX_RETRIES=0 POLL_SECS=1 PROGRESS_SECS=1000 \
+        bash "$REVIEW" "$TARGET" >/dev/null 2>&1
+}
+case_cursor_caller_gets_codex() {
+    local rep="$ROOT/cursor-caller.md"
+    REVIEW_CALLER=cursor STUB_MODE=ok cursor_run "$rep" || return 1
+    ! grep -q 'same-vendor' "$rep" && grep -q 'stub finding' "$rep" || return 1
+    grep -Eq '^append review.run --agent=cursor --project=/[^ ]+ --author_harness=cursor --reviewer_harness=codex ' "$OBSERVE_LOG"
+}
+check "a Cursor caller is reviewed by a logged-in Codex" case_cursor_caller_gets_codex
+case_cursor_caller_gets_claude() {
+    local rep="$ROOT/cursor-caller-claude.md"
+    REVIEW_CALLER=cursor REVIEW_AUTHOR_MODEL=openai/gpt-author STUB_CODEX_LOGIN_RC=1 cursor_run "$rep" || return 1
+    ! grep -q 'same-vendor' "$rep" && grep -q 'stub-claude-report' "$rep" || return 1
+    grep -Eq -- '--author_harness=cursor --reviewer_harness=claude-code ' "$OBSERVE_LOG"
+}
+check "a Cursor caller with Codex logged out is reviewed by Claude, not by Cursor" case_cursor_caller_gets_claude
+case_cursor_detected_before_claude() {
+    env -u REVIEW_CALLER CURSOR_AGENT=1 CLAUDECODE=1 STUB_MODE=ok \
+        bash -c "$(declare -f cursor_run); ROOT='$ROOT' REVIEW='$REVIEW' TARGET='$TARGET' OBSERVE_LOG='$OBSERVE_LOG' cursor_run '$ROOT/cursor-detect.md'" || return 1
+    grep -Eq '^append review.run --agent=cursor ' "$OBSERVE_LOG"
+}
+check "a Cursor started from a Claude Code shell is detected as Cursor" case_cursor_detected_before_claude
+case_cursor_named_reviewer() {
+    local rep="$ROOT/cursor-reviewer.md"
+    REVIEW_CALLER=claude-code REVIEW_REVIEWER=cursor cursor_run "$rep" || return 1
+    grep -q 'stub-cursor-report' "$rep" && ! grep -q 'same-vendor' "$rep" || return 1
+    [[ "$(paste -sd' ' "$CURSOR_CAPTURE.args")" == '-p --trust --mode ask --output-format json' ]] || return 1
+    grep -q 'export const a = 1;' "$CURSOR_CAPTURE.stdin" || return 1
+    grep -Eq -- '--author_harness=claude-code --reviewer_harness=cursor ' "$OBSERVE_LOG"
+}
+check "a named Cursor reviewer gets the review text on stdin and its JSON result is the report" case_cursor_named_reviewer
+case_cursor_reviewer_isolated() {
+    local home="$ROOT/cursor-user-home" run_home run_cwd share login
+    mkdir -p "$home/.config/cursor" "$home/.local/share"; printf 'LOGIN-COPY\n' > "$home/.config/cursor/auth.json"
+    HOME="$home" REVIEW_CALLER=claude-code REVIEW_REVIEWER=cursor cursor_run "$ROOT/cursor-isolated.md" || return 1
+    IFS='|' read -r run_home run_cwd share login < "$CURSOR_CAPTURE.env"
+    [[ "$run_home" != "$home" && "$share" == "$home/.local/share" && "$login" == LOGIN-COPY ]] || return 1
+    [[ "$run_cwd" != "$PWD" && ! -e "$run_home" && ! -e "$run_cwd" ]]   # an empty folder, removed with the home afterwards
+}
+check "a Cursor reviewer runs in a throwaway home with only the login and install, from an empty folder" case_cursor_reviewer_isolated
+case_cursor_reviewer_group_killed() {
+    REVIEW_CALLER=claude-code REVIEW_REVIEWER=cursor cursor_run "$ROOT/cursor-group.md" || return 1
+    ! kill -0 "$(cat "$CURSOR_CAPTURE.child")" 2>/dev/null
+}
+check "a process the Cursor reviewer leaves running is killed with its group" case_cursor_reviewer_group_killed
+case_cursor_reviewer_error() {
+    local rc=0
+    REVIEW_CALLER=claude-code REVIEW_REVIEWER=cursor STUB_CURSOR=error cursor_run "$ROOT/cursor-error.md" || rc=$?
+    [[ "$rc" -eq 2 ]] && has '"outcome":"failed"' && [[ ! -s "$OBSERVE_LOG" ]]
+}
+check "a Cursor answer marked is_error is a failed review, not a report" case_cursor_reviewer_error
 
 # ---- 2. empty response is recorded, and named as empty ---------------------
 case_empty() {
     local rc=0
     STUB_MODE=empty run_review "$TARGET" || rc=$?
-    [[ "$rc" -eq 6 ]] || return 1
+    [[ "$rc" -eq 2 ]] || return 1
     [[ "$(n_event start)" -eq 1 ]] || return 1
     [[ "$(n_event end)" -eq 1 ]] || return 1
     has '"outcome":"failed"' || return 1
@@ -260,7 +346,7 @@ check "codex exiting clean with no report is recorded as failure=empty" case_emp
 case_exit() {
     local rc=0
     STUB_MODE=fail run_review "$TARGET" || rc=$?
-    [[ "$rc" -eq 6 ]] || return 1
+    [[ "$rc" -eq 2 ]] || return 1
     has '"failure":"exit:3"'
 }
 check "codex exiting nonzero is recorded as failure=exit:<n>, not empty" case_exit
@@ -270,7 +356,7 @@ case_watchdog() {
     local rc=0
     STUB_MODE=hang STALL_SECS_OVERRIDE=3 TIMEOUT_SECS_OVERRIDE=20 \
         run_review "$TARGET" || rc=$?
-    [[ "$rc" -eq 6 ]] || return 1
+    [[ "$rc" -eq 2 ]] || return 1
     has '"failure":"watchdog"'
 }
 check "a stalled codex killed by the watchdog is recorded as failure=watchdog" case_watchdog

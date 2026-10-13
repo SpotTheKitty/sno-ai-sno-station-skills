@@ -8,6 +8,8 @@ import { atomicWrite } from './store.ts';
 import type { State } from './store.ts';
 import { readCatalogue, resolveSkill } from './catalogue.ts';
 import type { CatalogueEntry } from './catalogue.ts';
+import { hermesSessions, openclawSessions } from './agent-sessions.ts';
+import { cursorLines, cursorProject, cursorTranscripts, cursorUserText } from './cursor.ts';
 
 // Node cannot build a string longer than 0x1fffffe8 chars, so a session file at or above that many
 // bytes cannot be read with readFileSync(utf8) — the attempt throws and, unguarded, crashes the whole
@@ -116,6 +118,14 @@ export function skillsLoaded(records: readonly StoredRecord[], harness: Harness,
         if (block.type === 'tool_use' && block.name === 'Skill' && isObject(block.input) && typeof block.input.skill === 'string') names.push(block.input.skill);
       }
     }
+    if ((harness === 'hermes' || harness === 'openclaw') && Array.isArray(message.content)) {
+      for (const block of message.content.filter(isObject)) {
+        if (block.type !== 'tool_use' || typeof block.name !== 'string'
+          || (block.name !== 'skill_view' && !block.name.startsWith('skills')) || !isObject(block.input)) continue;
+        const name = block.input.name ?? block.input.skill;
+        if (typeof name === 'string') names.push(name);
+      }
+    }
   }
   return [...new Set(names.map(name => resolveSkill(name, catalogue)))];
 }
@@ -185,7 +195,7 @@ export function existingTraces(store: string, withText: (trace: Trace) => boolea
     if (!isObject(value) || typeof value.session_id !== 'string' || typeof value.version !== 'number'
       || !Array.isArray(value.source_line_range) || !Array.isArray(value.records)) throw new Error(`raw: invalid trace ${path}`);
     // Store-owned immutable format; reject missing identity before indexing it.
-    if (value.agent_id !== 'claude-code' && value.agent_id !== 'codex') throw new Error(`raw: invalid agent_id ${path}`);
+    if (!['claude-code', 'codex', 'hermes', 'openclaw', 'cursor'].includes(String(value.agent_id))) throw new Error(`raw: invalid agent_id ${path}`);
     const trace = value as unknown as Trace;
     if (!withText(trace)) trace.records = [];
     return trace;
@@ -214,7 +224,7 @@ function traceVersions(store: string): TraceVersion[] {
   return walk(join(store, 'raw'), true).filter(path => /\.v\d+\.json$/.test(path)).map(path => {
     const header: unknown = JSON.parse(firstLine(path).replace(/,"records":\[$/, '}'));
     if (!isObject(header) || typeof header.session_id !== 'string' || typeof header.user_id !== 'string'
-      || (header.agent_id !== 'claude-code' && header.agent_id !== 'codex')
+      || (header.agent_id !== 'claude-code' && header.agent_id !== 'codex' && header.agent_id !== 'hermes' && header.agent_id !== 'openclaw' && header.agent_id !== 'cursor')
       || typeof header.version !== 'number' || !Number.isInteger(header.version) || header.version < 1
       || !Array.isArray(header.source_line_range) || header.source_line_range.length !== 2
       || !header.source_line_range.every(line => Number.isInteger(line) && line >= 1)
@@ -232,7 +242,8 @@ function knownRecords(lines: readonly ParsedLine[], harness: Harness): { records
   let skipped = 0;
   let blocks = 0;
   for (const line of lines) {
-    const known = harness === 'claude-code' ? ['user', 'assistant'] : ['session_meta', 'response_item', 'turn_context', 'event_msg'];
+    const known = harness === 'codex' ? ['session_meta', 'response_item', 'turn_context', 'event_msg']
+      : harness === 'claude-code' || harness === 'cursor' ? ['user', 'assistant'] : ['session_meta', 'user', 'assistant', 'tool'];
     if (!known.includes(String(line.record.type))) { skipped++; continue; }
     if (line.record.type === 'event_msg') {
       const event = payload(line.record, 'codex');
@@ -269,9 +280,9 @@ function sessionDetails(lines: readonly ParsedLine[], harness: Harness, path: st
   const metadata = lines.find(line => line.record.type === 'session_meta')?.record.payload;
   const meta = isObject(metadata) ? metadata : {};
   const first = lines.find(line => typeof line.record.cwd === 'string')?.record ?? {};
-  const id = harness === 'claude-code' ? basename(path, '.jsonl') : meta.id;
+  const id = harness === 'claude-code' || harness === 'cursor' ? basename(path, '.jsonl') : meta.id;
   if (typeof id !== 'string' || !id || /[\/\\\0]/.test(id) || id === '.' || id === '..') throw new Error(`session: invalid session id in ${path}`);
-  const cwd = harness === 'codex' ? meta.cwd : first.cwd;
+  const cwd = harness === 'claude-code' ? first.cwd : meta.cwd;
   const remote = isObject(meta.git) ? meta.git.repository_url : undefined;
   const role = harness === 'codex' ? meta.role : first.role;
   return { id, cwd: typeof cwd === 'string' ? cwd : '',
@@ -284,10 +295,13 @@ export interface HarvestResult { traces: Trace[]; log: string[] }
 
 export function harvest(store: string, config: Config, state: State, user: string, now: Date = new Date()): HarvestResult {
   validateRoots(config, store);
-  const [claudeSkills, codexSkills] = skillRoots(config);
+  const [claudeSkills, codexSkills, hermesSkills, openclawSkills] = skillRoots(config);
   const catalogues: Record<Harness, CatalogueEntry[]> = {
     'claude-code': readCatalogue([claudeSkills]),
     codex: readCatalogue([codexSkills]),
+    hermes: readCatalogue([hermesSkills]),
+    openclaw: readCatalogue([openclawSkills]),
+    cursor: readCatalogue([claudeSkills, codexSkills]),
   };
   const history = readHistory(config.claude_home);
   const signals: unknown = JSON.parse(readFileSync(join(paths.references, 'signals.json'), 'utf8'));
@@ -305,9 +319,10 @@ export function harvest(store: string, config: Config, state: State, user: strin
   const log = ['harvested sessions under store: 0'];
   const floor = now.getTime() - limits.firstDays * 86_400_000;
   const quiet = now.getTime() - limits.quietMinutes * 60_000;
-  const inputs: { path: string; harness: Harness; mtime: number }[] = [];
-  for (const [root, harness] of [[config.claude_root, 'claude-code'], [config.codex_root, 'codex']] as const) {
+  const inputs: { path: string; harness: Harness; mtime: number; read?: () => ParsedSession }[] = [];
+  for (const [root, harness] of [[config.claude_root, 'claude-code'], [config.codex_root, 'codex'], [config.cursor_root, 'cursor']] as const) {
     const candidates = harness === 'codex' ? walk(root, true).filter(path => /^rollout-.*\.jsonl$/.test(basename(path)))
+      : harness === 'cursor' ? cursorTranscripts(root)
       : (existsSync(root) ? readdirSync(root, { withFileTypes: true }).filter(entry => entry.isDirectory()).flatMap(entry => walk(join(root, entry.name), false).filter(path => path.endsWith('.jsonl'))) : []);
     const pending = Object.keys(state.pending).filter(path => isWithin(root, path));
     for (const path of new Set([...candidates, ...pending])) {
@@ -317,23 +332,31 @@ export function harvest(store: string, config: Config, state: State, user: strin
     }
   }
   const startingCursors = { ...state.cursors };
+  const earliest = Math.min(floor, ...Object.values(startingCursors));
+  inputs.push(...hermesSessions(config, earliest, quiet, log), ...openclawSessions(config, earliest, quiet, log));
   for (const input of inputs.sort((a, b) => a.mtime - b.mtime || a.path.localeCompare(b.path))) {
     const { path, harness, mtime } = input;
     const pending = state.pending[path];
     if (pending?.status === 'unparseable' || mtime > quiet) continue;
-    const earliest = Math.min(floor, ...Object.values(startingCursors));
     if (!pending && mtime < earliest) continue;
     // Already harvested and unchanged since (same mtime, no appended lines): skip without re-reading.
     if (!pending && harvestedMtime.get(path) === mtime) continue;
-    const size = statSync(path).size;
+    const size = input.read ? 0 : statSync(path).size;
     if (size >= MAX_SESSION_BYTES) {
       // One more failed attempt, like a parse failure below: state.json requires failures >= 1.
       state.pending[path] = { failures: (pending?.failures ?? 0) + 1, status: 'unparseable' };
       log.push(`oversized: ${path} is ${size} bytes; skipped (over the ${MAX_SESSION_BYTES}-byte readable limit)`);
       continue;
     }
-    const parsed = parseSession(readFileSync(path, 'utf8'));
-    if (statSync(path).mtimeMs !== mtime) { log.push(`session changed during harvest: ${path}`); continue; }
+    let parsed: ParsedSession;
+    try { parsed = input.read ? input.read() : parseSession(readFileSync(path, 'utf8')); }
+    catch (error) {
+      if (!input.read) throw error;
+      state.pending[path] = { failures: (pending?.failures ?? 0) + 1, status: 'pending' };
+      log.push(`${harness} session ${path} read failed: ${String(error).replaceAll('\n', ' ')}; skipped`);
+      continue;
+    }
+    if (!input.read && statSync(path).mtimeMs !== mtime) { log.push(`session changed during harvest: ${path}`); continue; }
     if (!parsed.ok) {
       const failures = (pending?.failures ?? 0) + 1;
       state.pending[path] = { failures, status: failures >= 3 ? 'unparseable' : 'pending' };
@@ -341,7 +364,9 @@ export function harvest(store: string, config: Config, state: State, user: strin
       continue;
     }
     if (!parsed.complete_lines) continue;
+    if (harness === 'cursor') parsed.lines = cursorLines(parsed.lines);
     const detail = sessionDetails(parsed.lines, harness, path);
+    if (harness === 'cursor') detail.cwd = cursorProject(detail.id, log);
     const missingCwd = detail.cwd && !existsSync(detail.cwd) ? detail.cwd : undefined;
     if (missingCwd && harness === 'claude-code') detail.cwd = history.find(item => item.sessionId === detail.id && item.project && existsSync(item.project))?.project ?? '';
     const identity = resolveIdentity({ user_id: user, harness, cwd: detail.cwd, remote: detail.remote ?? gitRemote(detail.cwd),
@@ -364,6 +389,7 @@ export function harvest(store: string, config: Config, state: State, user: strin
         const typed = historyPrompt(history, detail.id, item.record.timestamp);
         if (typed !== contentText(payload(item.record, harness).content)) item.user_text = typed;
       }
+      if (harness === 'cursor' && item.record.type === 'user') item.user_text = cursorUserText(contentText(payload(item.record, harness).content));
       const result = redactValue(item);
       if (!isObject(result.value) || !isObject(result.value.record)) throw new Error('redaction: record shape changed');
       item.record = result.value.record;

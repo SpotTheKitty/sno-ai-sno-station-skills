@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { applyCloudHistoryLinks, applyCloudResponse, buildCloudBatch, sendCloudBatch } from './cloud.ts';
+import { applyCloudHistoryLinks, applyCloudResponse, buildCloudBatch, sendCloudBatch, slimAnsweredRequest } from './cloud.ts';
 import type { CloudResponse } from './cloud.ts';
 import { isObject, reflectionFiles, SettingsUnavailable, stationCell, readStationSettings } from './config.ts';
 import type { Config } from './config.ts';
@@ -63,6 +63,7 @@ export function reflect(store: string, config: Config, runId: string, backend: B
       catch (error) { log.push(`cloud run ${response.run_id} history links not saved: ${String(error)}; local report unchanged`); }
     }
     historyAcknowledged ||= response.history_acknowledged;
+    slimAnsweredRequest(join(staging, id, 'cloud-request.json'));
     const request = JSON.parse(readFileSync(join(staging, id, 'cloud-request.json'), 'utf8'));
     for (const half of request.halves) for (const session of half.sessions) {
       acknowledged.add(`${half.harness}/${session.session_id}/${session.version}`);
@@ -76,7 +77,8 @@ export function reflect(store: string, config: Config, runId: string, backend: B
     const proposals = readLedger(store).filter(row => row.type === 'proposal' && row.verdict === 'pending');
     observe('rsi.proposal', { level: 'user', proposal_count: local?.proposals ?? 0, skills_touched: local?.proposals ?? 0 },
       join(staging, runId, reflectionFiles.runLog));
-    return { failed: false, report: [...counts, 'Uploaded: 0', `No-upload: ${reason}`,
+    // Every call failing (a logged-out or missing CLI) is a failed night, not "success, 0 lessons".
+    return { failed: local !== undefined && local.asked === 0 && local.unavailable > 0, report: [...counts, 'Uploaded: 0', `No-upload: ${reason}`,
       ...(local ? [`Local sessions asked: ${local.asked}`, `New lessons: ${local.lessons}`, `New proposals: ${local.proposals}`] : []),
       ...log.filter(line => line.startsWith('local writer:')),
       ...decisionLines(lessons, proposals)] };

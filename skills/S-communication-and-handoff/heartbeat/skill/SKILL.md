@@ -14,9 +14,10 @@ requires:
 
 Use the `sno heartbeat` command installed by `sno setup`. This skill supplies
 instructions, not a program copy. If the command names a missing prerequisite, install
-that tool and retry. On macOS `coreutils` supplies GNU `timeout` and `tail`; put its
-`libexec/gnubin` directory on PATH, and install `bash` and `flock` when required.
-Windows requires WSL.
+that tool and retry. On macOS install Homebrew `coreutils` (GNU `timeout`, `tail` and `mv`) and
+put its `libexec/gnubin` directory on PATH; newer versions of the command also find the
+`g`-prefixed names without it, and then the reader command they print says `gtail`. Install `bash`
+and `flock` when required. Windows requires WSL.
 
 [The bundled command contract](references/heartbeat-contract.json) pins the public syntax
 checked by this skill's offline self-test. Use `sno heartbeat --help` for the installed program.
@@ -27,12 +28,31 @@ unsupported or unverified, skip this skill and name the missing capability. The 
 below require those tools and use Claude Code's `Bash` and `Monitor` tool names; other harnesses use
 their own equivalents. A background process or a log file alone is insufficient.
 
+**Hermes and OpenClaw have no persistent log reader; they deliver a finished background command
+instead, and that is enough.** Run one tick per background command and re-arm after each notice:
+`sleep <seconds>; sno heartbeat --label <name> --max-ticks 1 [--log <LOG>] -- <hook>` (the command ticks
+once immediately when it starts, so the `sleep` sets the spacing). Start it with the agent's own
+background tool — Hermes: the terminal tool with `background=true` and `notify_on_complete=true`;
+OpenClaw: the exec tool in the background (it announces the exit by default; if an approval prompt
+precedes the command, no notice arrives, so use a command the agent may run without approval). The
+completion notice carries the tick line: say what it says, then start the next one. Timing differs:
+OpenClaw's notice arrives during a running turn; Hermes delivers it at the next turn boundary, so one
+very long turn delays its checks until that turn ends (measured 2026-10-09). `--until-file` watches need
+no re-arming. For a long run on a busy Hermes or OpenClaw session, prefer a second watchman session.
+
 Before either shape, create a fresh empty log with `mktemp "${TMPDIR:-/tmp}/heartbeat.XXXXXX"`.
 Use its returned path as `<LOG>` in both calls. Never reuse a previous run's log.
 Copy one of these two blocks and set the label, interval and paths. Both calls are required.
 When armed, `sno heartbeat` prints its process id and a suggested reader command of the form
 `tail --pid=<PID> -F -n0 <log>`. Put that process id in `<PID>` below; the reader here uses
 `-n +1` instead of `-n0`, for the reason given under "The one rule".
+
+**Cursor (IDE and CLI) has no `Monitor`.** There `sno heartbeat` itself delivers each tick into the Cursor
+conversation that armed it, and when armed from Cursor it prints the reader instruction to follow in place of
+the `tail` line. An IDE chat receives ticks through its Reach seat, so run `join-talk` in that chat first; the
+ticks then arrive at the end of a turn and while the chat is idle. A Cursor CLI chat in tmux receives them typed
+into its pane. A print-mode run (`cursor-agent -p`) is resumed with each tick (`cursor-agent -p --resume
+<chat id>`); a run that exited non-zero is logged and resumed on the next tick. Say what each tick says.
 
 ## 1. Report every so often
 

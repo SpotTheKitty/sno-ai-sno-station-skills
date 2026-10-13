@@ -13,8 +13,7 @@ requires:
 
 Transfer the owner's task, current state and existing authority to one receiving agent.
 The owner is whoever owns the work, usually the user.
-**The receiver does not edit until explicit release.** After verified release the sender
-stops task execution; it does not become a supervisor or wait for completion.
+**The receiver does not edit until explicit release.** After verified release the sender stops execution; it does not supervise or wait for completion.
 
 Use the installed Reach guide and `sno reach --help` for exact card syntax and command
 arguments. [The bundled contract](references/reach-contract.json) bounds the text self-test;
@@ -22,8 +21,7 @@ it does not prove an installed runtime. Confirm `sno reach --version` and the re
 runtime before creating a receiver. If unavailable, retain ownership and report the missing
 input. No runtime or installation is bundled with this skill.
 
-Install and update the program through `sno setup`. If the installed command names a
-missing prerequisite, install that named tool and retry before transferring ownership.
+Install/update through `sno setup`; install any named missing prerequisite before transferring ownership.
 On macOS use the corresponding Homebrew formula: `bash`, `coreutils`, `findutils`,
 `gnu-sed`, `gnu-tar`, `flock`, `tmux`, `jq`, or `util-linux`; follow the installed guide's
 GNU command PATH instructions. Windows requires WSL.
@@ -44,9 +42,8 @@ Message-ID are Reach terms, defined in the `reach` skill.
   Nothing can be verified with A and there is no A to release, so the procedure below does not apply;
   follow "When the sender is gone" instead. It only works if A kept a progress record.
 
-Use real addresses and the existing
-checkout. Preserve owner-locked decisions, exclusions and the repository's own rules. No second owner
-approval is needed for already authorized work. Do not create or switch checkouts as a side
+Use real addresses and the existing checkout. Preserve owner-locked decisions, exclusions and the repository's own rules.
+No second owner approval is needed for already authorized work. Do not create or switch checkouts as a side
 effect of handoff. Secrets and raw credentials do not belong in the brief.
 
 ## Procedure
@@ -62,23 +59,28 @@ effect of handoff. Secrets and raw credentials do not belong in the brief.
    original work card exists.
    End with the standalone marker `<!-- AGENT_CUTOVER_EOF -->`.
    Measure the exact byte count and SHA-256; reread the tail before delivery.
-2. **Initialize before spawn.** Select the requested agent kind, or the same kind as A when none was
-   specified, a fresh address B and a display name. Run `sno reach init --as <B> --name <display>`
+2. **Initialize before spawn.** Select the requested kind/model/provider, including a quota pick candidate, or A's kind
+   when unspecified; choose a fresh address B and display name. Run `sno reach init --as <B> --name <display>`
    and verify success **before** `sno reach spawn <agent> --as <B> --cwd <checkout> --window`.
+   Pass the pick's `--model M` and raw `--provider P`; map `claude-code` to `claude`,
+   `cursor` to `cursor-agent`, and keep `codex`, `hermes`, `openclaw` as launch kinds.
    Always pass `--window`: an ACP seat (the non-terminal Agent Client Protocol seat that `spawn` creates without `--window`) shows its work only while a caller holds its prompt,
-   so once that caller's `--timeout` expires the rest of the turn is invisible to `watch` and
-   its output is lost; a receiver owns the task for hours after A leaves, so it must sit on a
-   tmux seat. Never hand a task to an ACP seat. Inspect the returned
+   so a receiver must sit on tmux to remain visible after the caller leaves. Never hand a task to an ACP seat. A Cursor receiver runs
+   `cursor-agent` on a tmux window; a Cursor IDE chat is never spawned, and receives a hand-off
+   only when it is already a live seat (its agent ran `join-talk`). Inspect the returned
    seat/channel/handle and the actual runtime/checkout; `sno reach doctor --as <B>` checks
    readiness. If A will send cards,
-   initialize and register A's own existing runtime as needed. A direct call does not
-   require a fabricated A work card. On retry inspect the existing B before creating another.
+   initialize/register A as needed. Direct calls need no A card; inspect B before retrying.
 3. **Verify readiness without writing.** Send the short launcher below through
-   `sno reach call <B> <launcher> --expect <ready-nonce> --timeout 300`.
+   `sno reach call <B> <launcher> --expect <ready-nonce> --timeout 280`.
    B reads the whole brief, verifies bytes, SHA-256 and end marker, then returns the fresh
    readiness nonce, measured digest and intended checkout. B makes no task edits. A checks
-   new receiver output, not a prompt echo, then repeats and compares its Git/untracked-file
-   observations. Any difference or incomplete brief fails the transfer; A retains ownership.
+   new receiver output, not a prompt echo. Before release, a picked Hermes/OpenClaw receiver
+   must answer on the chosen vendor: use rotate-agent's `rotate-agent-answer-provider`
+   with `--agent <agent> --seat <B> --receipt <call-deliveryReceipt>`. Unknown or wrong provider
+   fails that candidate; log the seat/model/error and try the next pick candidate with B paused.
+   Claude Code/Codex vendors are fixed; Cursor uses its integrated concrete model/vendor read.
+   A then repeats and compares its Git/untracked-file observations. Any difference or incomplete brief fails the transfer; A retains ownership.
 4. **Prepare a new card only for card-backed work.** Use the fresh Message-ID reserved for B under
    the same X-Work, with From A, To B, and **Reply-To R**. Link A's original card and the
    verified brief in the body, and say "accept, but do not edit before explicit release".
@@ -100,7 +102,7 @@ effect of handoff. Secrets and raw credentials do not belong in the brief.
    status after reading it; B does not dismiss its actionable work card. For a direct
    owner task skip cancellation and mailbox acceptance; verified readiness is sufficient.
 6. **Explicit release, then receiver writes.** For either entry, A sends
-   `sno reach call <B> <release-message> --expect <release-receipt-pattern> --timeout 300`.
+   `sno reach call <B> <release-message> --expect <release-receipt-pattern> --timeout 280`.
    Use the release template below with the verified brief digest, a fresh release nonce,
    and B's card ID when present. Match the standalone line `HANDOFF_RELEASED <release-nonce>`
    from new receiver output, not an echo of the request. B verifies these, emits the
@@ -112,12 +114,12 @@ effect of handoff. Secrets and raw credentials do not belong in the brief.
    `--expect HANDOFF_PAUSED`, rewrites the brief with the checkout as B left it, and repeats
    steps 3 and 6 against the new digest.
    On that early change, run `timeout 60 sno observe append handoff.pause --agent=<sender harness> --project=<checkout> --reason=early_write`
-   once, using `claude-code` or `codex` and the absolute checkout path; suppress the command's output,
+   once, using `claude-code`, `codex`, `hermes`, `openclaw` or `cursor` and the absolute checkout path; suppress the command's output,
    write `sno: not found; handoff.pause event not recorded` to stderr if `sno` is absent,
    or `sno observe append handoff.pause failed (exit N); event not recorded` on nonzero exit,
    and continue recovery without retrying.
    This direct release creates no additional actionable work card. If receipt is uncertain,
-   A remains paused and inspects B's new output with `sno reach watch <B> --timeout 300`;
+   A remains paused and inspects B's new output with `sno reach watch <B> --timeout 280`;
    A never resumes competing edits. Do not release an unverified brief.
 7. **Sender leaves.** After verified release, A runs `sno reach unregister --as <A>` if it
    was registered, checks absence with `sno reach seats --json`, tells the owner where B
@@ -131,7 +133,7 @@ effect of handoff. Secrets and raw credentials do not belong in the brief.
    After A is absent, B
    sends exactly one `completed` or `failed` reply on **B's same original work card**, with
    a nonblank result/reason on stdin. That answer goes to R after A has left; R can use
-   `sno reach wait --as <R> --reply-to <B-card-id> --from <B> --timeout 300` for the answer and export/state
+   `sno reach wait --as <R> --reply-to <B-card-id> --from <B> --timeout 280` for the answer and export/state
    for its chain. R dismisses the received reports after reading. For direct owner work,
    B reports completion and the observable result in the destination session; no artificial
    mailbox terminal reply is required.
@@ -173,7 +175,7 @@ verify with, release, or unregister.
 
 ## Failure and retry
 
-Each call or wait has a deadline of at most 300 seconds. Acceptance observation has one
+Each call or wait has a deadline of at most 280 seconds. Acceptance observation has one
 300-second deadline and at most 60 checks, five seconds apart: run `sno reach state` in the foreground
 at most 60 times with `sleep 5` between runs, inside that one 300-second budget. Do not create an unattended background polling loop.
 

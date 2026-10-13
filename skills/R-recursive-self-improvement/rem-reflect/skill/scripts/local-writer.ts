@@ -103,14 +103,14 @@ function stageReminder(store: string, config: Config, runId: string, harness: st
 // harness. Nothing is sent to Sno: the session text goes only to the user's own agent CLI and its model account. A lesson
 // is not recalled until the owner accepts it. Sno CLI serves the prompt from its compiled binary; the public skill carries no prompt file.
 export function writeLocally(store: string, config: Config, runId: string, eligible: readonly Trace[], backend: Backend,
-  log: string[], now: Date): { asked: number; lessons: number; proposals: number } {
+  log: string[], now: Date): { asked: number; lessons: number; proposals: number; unavailable: number } {
   const done = doneKeys(store);
   const settings = loadLocalSettings(store, log);
-  const result = { asked: 0, lessons: 0, proposals: 0 };
+  const result = { asked: 0, lessons: 0, proposals: 0, unavailable: 0 };
   let instructions: string | undefined;
   const mark = (trace: Trace, outcome: string): void => appendRows(join(store, reflectionFiles.localWriter),
     [{ trace_key: traceKey(trace), run_id: runId, call_id: 'R5', result: outcome }]);
-  for (const harness of ['claude-code', 'codex'] as const) {
+  for (const harness of ['claude-code', 'codex', 'hermes', 'openclaw', 'cursor'] as const) {
     let staged = false;
     for (const { trace, events } of pick(eligible, harness, done)) {
       try {
@@ -124,6 +124,7 @@ export function writeLocally(store: string, config: Config, runId: string, eligi
         const fetched = spawnSync('sno', ['skills', 'rem-reflect-local-writer'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
         if (fetched.error || fetched.status !== 0 || !fetched.stdout.trim()) {
           log.push(`local writer: sno skills rem-reflect-local-writer failed: ${fetched.error?.message ?? (fetched.stderr.trim() || `exit ${fetched.status}`)}; no lessons or reminders written`);
+          result.unavailable++;
           return result;
         }
         instructions = fetched.stdout;
@@ -131,7 +132,7 @@ export function writeLocally(store: string, config: Config, runId: string, eligi
       log.push(`R5 local lesson generation: host (${harness})`);
       const cwd = join(store, reflectionFiles.staging, runId, harness);
       privateDirectory(cwd);
-      const cli: Cli = harness === 'codex' ? 'codex' : 'claude';
+      const cli: Cli = harness === 'claude-code' ? 'claude' : harness;
       let stdout: string;
       try {
         stdout = backend.spawn({ cli, cwd, input: promptFor(instructions, trace, events, settings.labeler_input_max_chars, settings.labeler_event_window_lines),
@@ -139,6 +140,7 @@ export function writeLocally(store: string, config: Config, runId: string, eligi
       } catch (error) {
         if (!(error instanceof BackendError) && !(error instanceof CeilingReached)) throw error;
         log.push(`${trace.trace_id}: local writer unavailable (${error.message})`);
+        result.unavailable++;
         continue;
       }
       result.asked++;

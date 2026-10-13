@@ -279,3 +279,25 @@ test('the pending-verdict line names this project\'s and user-wide undecided les
   const other = seed(config, [lesson('L-elsewhere', { status: 'candidate', project_id: 'github.com/other/repo', applies_to: 'project:github.com/other/repo' })], [], true);
   assert.doesNotMatch(recall(other, 'claude-code', { session_id: 'S1', cwd: checkout }, NOW, ARMED).lines.join('\n'), /await your verdict/);
 });
+
+test('before the first nightly run there is no store, and recall prints nothing and exits 0 so the session-start hook does not fail', () => {
+  const store = join(tmp('recall-no-store'), 'never-created');
+  const result = recall(store, 'claude-code', { session_id: 's1', cwd: tmp('recall-no-store-cwd') }, NOW, ARMED);
+  assert.deepEqual(result, { code: 0, lines: [] });
+});
+
+test('the timer sno setup installs counts as armed, so recall does not tell every session the daily run is off', () => {
+  const checkout = fixtureCheckout();
+  const config = fixtureConfig({ claude_root: tmp('c'), codex_root: tmp('x') });
+  const store = seed(config, [lesson('L-a')]);
+  const timed = recall(store, 'claude-code', { session_id: 'S1', cwd: checkout }, NOW, '', true);
+  assert.doesNotMatch(timed.lines.join('\n'), /not armed/);
+  assert.ok(idx(timed.lines).some(line => line.startsWith('L-a · ')), timed.lines.join('\n'));
+});
+
+test('with nothing to show for this project, recall prints nothing instead of an empty heading every session', () => {
+  const checkout = fixtureCheckout();
+  const config = fixtureConfig({ claude_root: tmp('c'), codex_root: tmp('x') });
+  const store = seed(config, [lesson('L-elsewhere', { project_id: 'github.com/other/repo', applies_to: 'project:github.com/other/repo' })]);
+  assert.deepEqual(recall(store, 'claude-code', { session_id: 'S1', cwd: checkout }, NOW, ARMED).lines, []);
+});

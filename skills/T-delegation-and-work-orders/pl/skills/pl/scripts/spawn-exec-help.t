@@ -49,6 +49,17 @@ resume_refused() {
 }
 check '--resume is refused for hermes' resume_refused hermes
 check '--resume is refused for openclaw' resume_refused openclaw
+check '--resume is refused for cursor' resume_refused cursor
+
+# The Cursor runtime is the cursor-agent CLI; the IDE's own `cursor` launcher on PATH does not satisfy it.
+mkdir -p "$root/ide-bin"; printf '#!/usr/bin/env bash\nexit 0\n' >"$root/ide-bin/cursor"; chmod +x "$root/ide-bin/cursor"
+cursor_dependency_named() {
+    local rc=0
+    PATH="$root/ide-bin:/usr/bin:/bin" bash "$launcher" --journey j-1 --repo "$root" --budget-h 1 --dispatch "$root/dispatch.md" \
+        --addr executor.j-1@host1 --runtime cursor >"$root/cursor.out" 2>"$root/cursor.err" || rc=$?
+    [[ "$rc" -eq 6 ]] && grep -Eq 'missing dependency: (.* )?cursor-agent( |$)' "$root/cursor.err"
+}
+check 'a cursor runtime without cursor-agent stops before starting and names cursor-agent' cursor_dependency_named
 
 printf '1..%d\n' "$tests"
 [[ "$failures" -eq 0 ]]

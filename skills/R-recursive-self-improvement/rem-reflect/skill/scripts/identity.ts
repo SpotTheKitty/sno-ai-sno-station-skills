@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { isObject, paths } from './config.ts';
 import { atomicWrite } from './store.ts';
 
-export type Harness = 'claude-code' | 'codex';
+export type Harness = 'claude-code' | 'codex' | 'hermes' | 'openclaw' | 'cursor';
 export interface Identity {
   user_id: string;
   project_id: string;
@@ -61,7 +61,7 @@ export function projectId(cwd: string, remote: string | undefined, names: Record
   return `dir:${createHash('sha256').update(project).digest('hex').slice(0, 16)}`;
 }
 
-function gitTop(cwd: string): string | undefined {
+export function gitTop(cwd: string): string | undefined {
   if (!existsSync(cwd)) return undefined;
   try {
     return resolve(execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], {

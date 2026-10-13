@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Switch a live seat without interrupting its turn; restore on failure.
+set -Eeuo pipefail
+START=$SECONDS
+usage() {
+  printf 'usage: rotate-agent-switch --agent hermes|openclaw|cursor --seat <address> --model <M> [--provider <P>] --original-model <O> --original-provider <OP>\n' >&2
+  exit "${1:-2}"
+}
+AGENT='' SEAT='' MODEL='' PROVIDER='' ORIGINAL_MODEL='' ORIGINAL_PROVIDER=''
+while (( $# )); do
+  case "$1" in
+    --agent|--seat|--model|--provider|--original-model|--original-provider)
+      (( $# >= 2 )) || usage
+      [[ -n "$2" ]] || usage
+      case "$1" in
+        --agent) AGENT="$2" ;; --seat) SEAT="$2" ;; --model) MODEL="$2" ;;
+        --provider) PROVIDER="$2" ;; --original-model) ORIGINAL_MODEL="$2" ;;
+        --original-provider) ORIGINAL_PROVIDER="$2" ;;
+      esac
+      shift 2 ;;
+    -h|--help) usage 0 ;;
+    *) usage ;;
+  esac
+done
+[[ "$AGENT" =~ ^(hermes|openclaw|cursor)$ && -n "$SEAT" && -n "$MODEL" && -n "$ORIGINAL_MODEL" ]] || usage
+[[ "$AGENT" == cursor || ( -n "$PROVIDER" && -n "$ORIGINAL_PROVIDER" ) ]] || usage
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# Bound the attempt separately so recovery always has its own full budget.
+HARD_DEADLINE=$((START + 280)) DEADLINE=$((START + 100))
+PHASE=attempt PHASE_START=$START
+trap 'printf "rotate-agent-switch: phase=%s elapsed=%ss\n" "$PHASE" "$((SECONDS - PHASE_START))" >&2' EXIT
+COMMAND='' PANE=''
+error() {
+  printf 'rotate-agent-switch: operation=%s seat=%s command=%s error=%s\n' "$1" "$SEAT" "$COMMAND" "$2" >&2
+}
+bounded() {
+  local cap="$1" left=$((DEADLINE - SECONDS)); shift
+  (( left > 0 )) || { error timeout 'operation deadline reached'; return 1; }
+  (( left >= cap )) || cap="$left"
+  timeout --signal=KILL "$cap" "$@"
+}
+wait_idle() {
+  local until=$((SECONDS + 200)) footer
+  while (( SECONDS < until && SECONDS < DEADLINE )); do
+    footer="$(bounded 5 tmux capture-pane -p -t "$PANE")" || { error capture-pane 'seat footer unreadable'; return 1; }
+    footer="$(tail -n 15 <<<"$footer")"
+    case "$AGENT" in
+      hermes)
+        if [[ "$footer" != *'msg=interrupt'* ]] && grep -q '^❯' <<<"$footer"; then return 0; fi ;;
+      openclaw) [[ "$footer" != *'connected | idle'* ]] || return 0 ;;
+      cursor) if grep -Eq '^[[:space:]]*[>❯][[:space:]]*$' <<<"$footer"; then return 0; fi ;;
+    esac
+    printf 'rotate-agent-switch: waiting for idle seat=%s elapsed=%ss deadline_in=%ss\n' "$SEAT" "$((SECONDS - START))" "$((DEADLINE - SECONDS))" >&2
+    bounded 4 sleep 3 || return 1
+  done
+  error idle 'no idle composer before deadline; no input sent'
+  return 1
+}
+switch_turn() {
+  local model="$1" provider="$2" answer actual answer_model='' current limit
+  case "$AGENT" in
+    hermes) COMMAND="/model $model --provider $provider" ;;
+    openclaw) COMMAND="/model $provider/$model" ;;
+    cursor) COMMAND="/model $model" ;;
+  esac
+  wait_idle || return 1
+  bounded 15 sno reach call "$SEAT" "$COMMAND" --raw >/dev/null || { error model-command 'raw send refused'; return 1; }
+  wait_idle || return 1
+  limit=$((DEADLINE - SECONDS)); (( limit <= 60 )) || limit=60
+  (( limit > 0 )) || { error confirm 'no time for a completed turn'; return 1; }
+  answer="$(bounded "$limit" sno reach call "$SEAT" continue --timeout "$limit")" || { error confirm 'continue refused or timed out'; return 1; }
+  [[ -n "$answer" ]] || { error confirm 'no new assistant answer'; return 1; }
+  current="$(bounded 20 sno subscription-quota-check --agent "$AGENT" --seat "$SEAT" --json)" ||
+    error read-model 'quota read returned nonzero; inspecting model JSON'
+  if [[ "$AGENT" == cursor ]]; then
+    actual="$(jq -r '.provider // empty' <<<"$current")"
+  else
+    actual="$(bounded 30 "$HERE/rotate-agent-answer-provider" --agent "$AGENT" --seat "$SEAT" --latest --with-model)" || { error confirm 'answer provider unknown'; return 1; }
+    read -r actual answer_model <<<"$actual"
+  fi
+  [[ "$actual" == "$provider" || ( "$AGENT" == cursor && -z "$provider" ) ||
+     ( "$actual" == custom && "$answer_model" == "$model" &&
+       ! "$provider" =~ ^(openai|openai-codex|codex|chatgpt|anthropic|claude|google|gemini|xai|grok|openrouter|deepseek|nvidia|zai|kimi|minimax)$ ) ]] ||
+    { error confirm "wrong provider expected=$provider actual=$actual answer_model=$answer_model"; return 1; }
+  [[ "$(jq -r 'select(.ok == true) | .model // empty' <<<"$current")" == "$model" ]] || { error confirm "model is not $model"; return 1; }
+}
+seats="$(bounded 10 sno reach seats --json)" || { error seats 'cannot find seat'; printf 'SWITCH FAIL restored=no\n'; exit 1; }
+PANE="$(jq -ser --arg seat "$SEAT" '.[] | select(.address == $seat and .channel == "tmux") | .handle | split(":") | last' <<<"$seats")" || { error seats 'no tmux handle'; printf 'SWITCH FAIL restored=no\n'; exit 1; }
+if switch_turn "$MODEL" "$PROVIDER"; then
+  printf 'SWITCH OK\n'
+  exit 0
+fi
+printf 'rotate-agent-switch: phase=%s elapsed=%ss\n' "$PHASE" "$((SECONDS - PHASE_START))" >&2
+PHASE=restore PHASE_START=$SECONDS
+DEADLINE=$((PHASE_START + 150))
+(( DEADLINE <= HARD_DEADLINE )) || DEADLINE=$HARD_DEADLINE
+if switch_turn "$ORIGINAL_MODEL" "$ORIGINAL_PROVIDER"; then
+  printf 'SWITCH FAIL restored=yes\n'
+else
+  printf 'SWITCH FAIL restored=no\n'
+fi
+exit 1

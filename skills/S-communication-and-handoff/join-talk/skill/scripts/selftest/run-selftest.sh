@@ -113,6 +113,26 @@ set -e
 [[ $rc -eq 3 && ! -s "$LOG" ]] || fail "orca without handle: rc=$rc log=$(cat "$LOG")"
 pass "orca handle comes from ORCA_TERMINAL_HANDLE"
 
+# 5b. A Cursor IDE chat (conversation id, no CLI marker) registers by its conversation id; a Cursor CLI
+#     outside tmux has no terminal to be reached at.
+: >"$LOG"
+set +e
+out="$(cd "$REPO" && env -i HOME="$FAKE_HOME" PATH="$FAKE_HOME/bin:$PATH" JOIN_SELFTEST_LOG="$LOG" \
+  CURSOR_AGENT=1 CURSOR_CONVERSATION_ID=11111111-aaaa-bbbb-cccc-0123456789ab bash "$JOIN" ide.seat@host1 2>"$WORK/cursor.err")"
+rc=$?
+set -e
+[[ $rc -eq 0 && "$out" == 'joined ide.seat@host1' ]] || fail "cursor ide: rc=$rc out=$out $(cat "$WORK/cursor.err")"
+grep -q -- '^sno reach register --as ide.seat@host1 --channel cursor-ide --handle 11111111-aaaa-bbbb-cccc-0123456789ab$' "$LOG" ||
+  fail "cursor ide: reach register call was: $(grep '^sno reach register' "$LOG" || true)"
+: >"$LOG"
+set +e
+(cd "$REPO" && env -i HOME="$FAKE_HOME" PATH="$FAKE_HOME/bin:$PATH" JOIN_SELFTEST_LOG="$LOG" \
+  CURSOR_AGENT=1 CURSOR_CONVERSATION_ID=c-1 CURSOR_INVOKED_AS=cursor-agent bash "$JOIN" cli.seat@host1 2>"$WORK/cursor-cli.err")
+rc=$?
+set -e
+[[ $rc -eq 3 && ! -s "$LOG" ]] || fail "cursor cli outside tmux: rc=$rc log=$(cat "$LOG")"
+pass "a Cursor IDE chat registers by conversation id; a Cursor CLI needs tmux"
+
 # 6. A mixed-case hostname (a Windows or macOS default) is lowercased into a valid address.
 mkdir -p "$WORK/hostbin"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "Team-MacBook.local"\n' >"$WORK/hostbin/hostname"

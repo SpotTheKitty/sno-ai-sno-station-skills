@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { run } from './rem-reflect.ts';
 import { calendar } from './config.ts';
-import { readState, writeState } from './store.ts';
+import { commitStore, readState, writeState } from './store.ts';
 import {
   hashListing, tmp, fixtureConfig, makeStore, FixtureBackend,
   writeClaudeSession, claudeUser, claudeAssistant, writeCodexSession, codexMeta, codexUser, codexAssistant,
@@ -34,6 +34,7 @@ test('a same-day run after today already succeeded is a no-op that writes nothin
   state.last_start = today;
   state.last_terminal = { ...today, status: 'success' }; // today already succeeded
   writeState(store, state);
+  commitStore(store, 'test: today already succeeded'); // the same-day guard reads the committed state
   const before = hashListing(store);
   const r = run(store, NOW, 'u', new FixtureBackend());
   assert.equal(r.code, 0, r.lines.join('\n'));

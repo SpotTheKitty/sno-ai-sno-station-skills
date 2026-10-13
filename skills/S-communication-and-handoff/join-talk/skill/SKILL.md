@@ -10,7 +10,7 @@ requires:
 
 # join-talk
 
-Needs: tmux (or the optional Orca app) as the terminal, `jq`, `flock`, and the `sno` CLI with its Reach runtime.
+Needs: tmux (or the optional Orca app) as the terminal, or a Cursor IDE chat, `jq`, `flock`, and the `sno` CLI with its Reach runtime.
 Reach is the messaging layer between agents (see the `reach` skill): a seat is one registered terminal with an
 address, a card is a stored message, and a ring is the wake-up that asks the agent to read its inbox.
 `SNO_EXECUTOR_ADDR` is the environment variable holding that address for agents opened through Reach; a
@@ -30,6 +30,8 @@ It prints one line, `joined <address>`. Tell the person that exact address, then
 to what you were doing. Rerunning it from the same terminal changes nothing. The seat is
 registered wherever agents on this machine are addressed, so cards, rings and a handoff find
 this terminal; `sno reach call` works for a tmux terminal, not for an Orca one.
+A Cursor IDE chat has no terminal: it is registered by its conversation id (channel `cursor-ide`), and a
+card reaches it when its turn ends. A Cursor CLI must run under tmux to be reachable.
 
 Options, only when the person names them: `join-talk.sh review.example-repo@host1` picks the address;
 `--name Fjord` picks the display name. Otherwise the address is `hand.<repo>@<host>` and the
@@ -44,8 +46,8 @@ name is the repository name.
 
 ## When it refuses
 
-- `no terminal to be reached at` — this shell is under neither tmux nor the optional Orca
-  app; nobody can ring it. Tell the person; do not retry.
+- `no terminal to be reached at` — this shell is under neither tmux, the optional Orca
+  app nor a Cursor IDE chat; nobody can ring it. Tell the person; do not retry.
 - `sno is missing` — the machine lacks the Reach install (`sno setup` installs it). Tell the
   person; do not retry.
 - `jq is missing` or `flock is missing` — install it (`flock` comes from util-linux), then run it again.

@@ -6,24 +6,25 @@
 #         (~/.local/state/codex-reviews/findings.jsonl).
 #   brief The page an agent hands to the user: both brains together, with examples and how to read them.
 #   self  Self-check: an agent's own words admitting an error in its own conversation, judged by that
-#         agent's own model (claude judges claude conversations, codex judges codex conversations).
+#         agent's own model (claude judges claude conversations, codex codex ones, cursor-agent cursor ones).
 # Exit 0 printed, 1 when run could read neither record, 2 bad usage. Needs bash 4+, GNU date/find/grep and jq;
-# self also needs the claude and/or codex command line.
+# self also needs the claude, codex and/or cursor-agent command line.
 set -Eeuo pipefail
 
 usage() {
   local status="${1:-2}"
   cat >&"$((status == 0 ? 1 : 2))" <<'USAGE'
 usage: sno catch-report run  [--since 7d|12h|30m|<date>] [--stats FILE] [--findings FILE]
-       sno catch-report self  [--since 7d|12h|30m|<date>] [--limit N] [--agent claude|codex|both]
-                              [--claude-dir DIR] [--codex-dir DIR] [--stats FILE] [--list]
-       sno catch-report brief [--since 7d|12h|30m|<date>] [--limit N] [--agent claude|codex|both]
-                              [--claude-dir DIR] [--codex-dir DIR] [--stats FILE] [--findings FILE]
+       sno catch-report self  [--since 7d|12h|30m|<date>] [--limit N] [--agent claude|codex|cursor|both]
+                              [--claude-dir DIR] [--codex-dir DIR] [--cursor-dir DIR] [--stats FILE] [--list]
+       sno catch-report brief [--since 7d|12h|30m|<date>] [--limit N] [--agent claude|codex|cursor|both]
+                              [--claude-dir DIR] [--codex-dir DIR] [--cursor-dir DIR] [--stats FILE] [--findings FILE]
 run   reviews started, finished, refused and never finished; mutual-review findings per reviewer model; verdicts;
       findings the owner has ruled on; the five reviews with the most fix-now.
 self  finds the moments where an agent admitted its own error in its own conversation, asks that agent's own
       model whether the agent found it itself or was told, and prints the counts next to the mutual-review
-      numbers; --list also shows each moment with the verdict. It sends short excerpts of your conversations to your own claude or codex (at most N, default 30).
+      numbers; --list also shows each moment with the verdict. It sends short excerpts of your conversations to your own claude, codex or cursor-agent (at most N, default 30).
+      --agent both reads Claude Code and Codex; --agent cursor reads Cursor.
 brief runs both measurements and prints one page for the user: the headline (what the two brains caught
       together), the second brain's numbers with the biggest catches quoted, the agents' own catches in their
       own words, and how to read the numbers. Same cost as self. Default cutoff 7d.
@@ -41,7 +42,7 @@ esac
 SINCE=7d LIMIT=30 AGENT=both LIST=0
 STATS="$HOME/.local/state/codex-review-stats.jsonl"
 FINDINGS="${FINDINGS_FILE:-$HOME/.local/state/codex-reviews/findings.jsonl}"
-CLAUDE_DIR="$HOME/.claude/projects" CODEX_DIR="$HOME/.codex/sessions"
+CLAUDE_DIR="$HOME/.claude/projects" CODEX_DIR="$HOME/.codex/sessions" CURSOR_DIR="$HOME/.cursor/projects"
 while (( $# )); do
   case "$1" in
     --since) SINCE="${2:-}"; shift 2 ;;
@@ -52,12 +53,13 @@ while (( $# )); do
     --list) LIST=1; shift ;;
     --claude-dir) CLAUDE_DIR="${2:-}"; shift 2 ;;
     --codex-dir) CODEX_DIR="${2:-}"; shift 2 ;;
+    --cursor-dir) CURSOR_DIR="${2:-}"; shift 2 ;;
     -h|--help) usage 0 ;;
     *) printf 'catch-report: unknown option %s\n' "$1" >&2; usage ;;
   esac
 done
 [[ "$LIMIT" =~ ^[1-9][0-9]*$ ]] || { printf 'catch-report: --limit must be a positive number\n' >&2; usage; }
-[[ "$AGENT" =~ ^(claude|codex|both)$ ]] || { printf 'catch-report: --agent must be claude, codex or both\n' >&2; usage; }
+[[ "$AGENT" =~ ^(claude|codex|cursor|both)$ ]] || { printf 'catch-report: --agent must be claude, codex, cursor or both\n' >&2; usage; }
 
 if [[ "$SINCE" =~ ^([0-9]+)([mhd])$ ]]; then
   case "${BASH_REMATCH[2]}" in m) unit=minutes ;; h) unit=hours ;; d) unit=days ;; esac
@@ -81,9 +83,6 @@ if [[ "$mode" == run ]]; then
   printf 'Catch report since %s UTC\n' "$cutoff"
   if totals="$(mutual_totals)"; then
     read -r reviews fixnow high medium <<<"$totals"
-    printf 'Two brains (who found the problems):\n'
-    printf '  Mutual review (the other model checks the work; all peer-review records): reviews %s, fix-now %s, high %s, medium %s\n' "$reviews" "$fixnow" "$high" "$medium"
-    printf '  Self-check (an agent finds its own error in its own conversation): not measured by run; use: sno catch-report self --since %s\n' "$SINCE"
     printf 'Mutual review found %s problems that had to be fixed now and %s high-severity findings.\n' "$fixnow" "$high"
   fi
   if [[ -r "$STATS" ]]; then
@@ -100,13 +99,12 @@ if [[ "$mode" == run ]]; then
       | ($w | map(select(.event == "refused"))) as $refused
       | ($starts | map(select(.run as $r | $closed | index($r) | not))) as $lost
       | "Reviews started: \($starts | length), finished: \($ends | length), refused: \($refused | length), never finished: \($lost | length)",
-        "By reviewer model:",
-        ( $ends | group_by($model[.run // ""] // "unknown (older records)") | sort_by(-length)
-          | .[] | "  \($model[.[0].run // ""] // "unknown (older records)"): runs \(length), high \(map(.high | n) | add), medium \(map(.medium | n) | add), fix-now \(map(.fix_now | n) | add), debt \(map(.debt | n) | add)" ),
+        "By reviewer model: \( $ends | group_by($model[.run // ""] // "unknown (older records)") | sort_by(-length)
+          | map("\($model[.[0].run // ""] // "unknown (older records)") \(length) runs (fix-now \(map(.fix_now | n) | add), high \(map(.high | n) | add), medium \(map(.medium | n) | add))") | join("; ") )",
         "Verdicts: \( $ends | map(.verdict // "unknown") | group_by(.) | map({v: .[0], c: length}) | sort_by(-.c) | map("\(.v) \(.c)") | join(", ") )",
         "Most fix-now:",
         ( $ends | map(select((.fix_now | n) > 0)) | sort_by(-(.fix_now | n)) | .[:5][]
-          | "  \(.fix_now)  \(.ts[:10])  \((.targets // []) | join(", "))  \(.report // "-")" )
+          | "  \(.fix_now)  \(.ts[:10])  \((.targets // []) | if length > 2 then "\(.[:2] | join(", ")) and \(length - 2) more" else join(", ") end)" )
     '
   else
     printf 'not read: %s -> run a review with the peer-review skill first, or pass --stats FILE\n' "$STATS"
@@ -124,7 +122,7 @@ if [[ "$mode" == run ]]; then
   else
     printf 'not read: %s -> run a review with the peer-review skill first, or pass --findings FILE\n' "$FINDINGS"
   fi
-  printf 'These records do not say who wrote the code under review, how many bugs an agent found and fixed in its own work before any review (sno catch-report self measures that), or whether an undecided finding is real.\n'
+  printf 'Not counted here: who wrote the code, or bugs an agent caught in its own work (see: sno catch-report self --since %s).\n' "$SINCE"
   (( readable == 1 ))
   exit $?
 fi
@@ -157,6 +155,10 @@ ROWS_CODEX='
       elif $p.type == "function_call_output" then (($p.output | tostring) as $c | if ($c | test($failing; "i")) then {k: "F", t: $c[:300]} else {k: "T"} end)
       else empty end
   else empty end) | . + {ts: $ts}'
+# Cursor rows: `{role, message: {content}}`, no tool output and no timestamps, so only admissions qualify.
+ROWS_CURSOR='
+  (.message.content[]? | select(.type == "text") | .text) as $t
+  | if .role == "assistant" then {k: "A", t: $t} elif .role == "user" then {k: "U", t: $t} else empty end | . + {ts: null}'
 PICK='
   . as $r
   | def failed_just_before($i): [range([$i - 10, 0] | max; $i)] | reverse
@@ -171,21 +173,26 @@ PICK='
 work="$(mktemp -d)"
 trap 'rm -rf -- "$work"' EXIT
 : >"$work/all.jsonl"
-sessions_claude=0 sessions_codex=0
+sessions_claude=0 sessions_codex=0 sessions_cursor=0
 not_read_lines=()
 
 collect() { # <agent> <dir>
   local agent="$1" dir="$2" f rows
   [[ -d "$dir" ]] || { not_read_lines+=("not read: $agent conversations -> $dir does not exist (use --$agent-dir)"); return 0; }
-  if [[ "$agent" == claude ]]; then rows="$ROWS_CLAUDE"; else rows="$ROWS_CODEX"; fi
+  local only=()
+  case "$agent" in claude) rows="$ROWS_CLAUDE" ;; codex) rows="$ROWS_CODEX" ;; cursor) rows="$ROWS_CURSOR"; only=(-path '*/agent-transcripts/*') ;; esac
   while IFS= read -r -d '' f; do
-    if [[ "$agent" == claude ]]; then sessions_claude=$((sessions_claude + 1)); else sessions_codex=$((sessions_codex + 1)); fi
+    case "$agent" in claude) sessions_claude=$((sessions_claude + 1)) ;; codex) sessions_codex=$((sessions_codex + 1)) ;; cursor) sessions_cursor=$((sessions_cursor + 1)) ;; esac
     jq -cR 'fromjson? // empty' -- "$f" 2>/dev/null | jq -c --arg failing "$FAILING" "$rows" 2>/dev/null | jq -s -c --arg admit "$ADMIT" --arg admit_zh "$ADMIT_ZH" --arg cut "$cutoff" --argjson per "$PER_SESSION" "$PICK" 2>/dev/null |
       jq -c --arg agent "$agent" --arg file "$f" '. + {agent: $agent, file: $file}' >>"$work/all.jsonl" || true
-  done < <(find "$dir" -type f -name '*.jsonl' -newermt "$cutoff" -size -60M -print0 2>/dev/null | sort -z)
+  done < <(find "$dir" -type f ${only[@]+"${only[@]}"} -name '*.jsonl' -newermt "$cutoff" -size -60M -print0 2>/dev/null | sort -z)
 }
-[[ "$AGENT" == codex ]] || collect claude "$CLAUDE_DIR"
-[[ "$AGENT" == claude ]] || collect codex "$CODEX_DIR"
+case "$AGENT" in
+  both) collect claude "$CLAUDE_DIR"; collect codex "$CODEX_DIR" ;;
+  claude) collect claude "$CLAUDE_DIR" ;;
+  codex) collect codex "$CODEX_DIR" ;;
+  cursor) collect cursor "$CURSOR_DIR" ;;
+esac
 total_cands="$(grep -c . "$work/all.jsonl" || true)"
 # Too many to judge: take LIMIT candidates spaced evenly over the whole list, so every conversation and both
 # agents are represented and the sample is repeatable.
@@ -208,8 +215,21 @@ Answer with exactly one word.
 SELF: the agent says or clearly shows that something it did earlier was wrong, it noticed this itself (by reading, testing or running something) with no user, reviewer or other agent pointing at it first, and is now fixing or redoing it.
 PROMPTED: a user, a reviewer or another agent pointed the error out first.
 NONE: anything else: routine progress (starting the next step, checking that something is in place, adding a planned check), a problem with the environment, an expected failure, or plain exploration."
-  if ! command -v "$agent" >/dev/null 2>&1; then printf 'MISSING\n' >"$work/verdict.$i"; return 0; fi
-  if [[ "$agent" == claude ]]; then
+  local cli="$agent"; [[ "$agent" != cursor ]] || cli=cursor-agent   # `cursor` alone is the IDE launcher
+  if ! command -v "$cli" >/dev/null 2>&1; then printf 'MISSING\n' >"$work/verdict.$i"; return 0; fi
+  if [[ "$agent" == cursor ]]; then
+    # cursor-agent has no flag to leave no session behind, so it runs with a throwaway home (removed with $work)
+    # that holds only its login and install and fires none of the user's Cursor hooks, from an empty folder.
+    # Prompt on stdin; --trust because a never-opened folder otherwise exits "Workspace Trust Required".
+    local home="$work/cursor-home.$i" cwd="$work/cursor-cwd.$i"
+    mkdir -p "$home/.local" "$cwd"
+    ln -s "$HOME/.local/share" "$home/.local/share"
+    if [[ "$(uname -s)" == Darwin ]]; then mkdir -p "$home/Library"; ln -s "$HOME/Library/Keychains" "$home/Library/Keychains"
+    else mkdir -p "$home/.config/cursor"; cp -- "$HOME/.config/cursor/auth.json" "$home/.config/cursor/" 2>/dev/null || true; fi
+    # Its own process group (timeout's), killed afterwards: cursor-agent leaves a language server running (observed).
+    out="$(cd -- "$cwd" && printf '%s' "$prompt" | HOME="$home" setsid bash -c 'printf %s "$$" > "$1"; exec timeout 180 cursor-agent -p --trust --mode ask' _ "$work/cursor-group.$i" 2>/dev/null || true)"
+    kill -KILL -- "-$(cat "$work/cursor-group.$i" 2>/dev/null)" 2>/dev/null || true
+  elif [[ "$agent" == claude ]]; then
     # --tools takes every following word as a tool name, so the prompt goes in on standard input.
     out="$(printf '%s' "$prompt" | timeout 180 claude -p --no-session-persistence --tools "" 2>/dev/null || true)"
   else
@@ -266,8 +286,9 @@ if [[ "$mode" == self ]]; then
   do_self
   for l in ${not_read_lines[@]+"${not_read_lines[@]}"}; do printf '%s\n' "$l"; done
   printf 'Self-check since %s UTC\n' "$cutoff"
-  printf 'Looked at: %s sessions (claude %s, codex %s)\n' "$((sessions_claude + sessions_codex))" "$sessions_claude" "$sessions_codex"
-  for a in "${!missing_agents[@]}"; do printf 'not judged: %s -> the %s command is not installed, so its moments cannot be judged\n' "$a" "$a"; done
+  printf 'Looked at: %s sessions (claude %s, codex %s, cursor %s)\n' "$((sessions_claude + sessions_codex + sessions_cursor))" "$sessions_claude" "$sessions_codex" "$sessions_cursor"
+  (( sessions_cursor == 0 )) || printf '%s\n' "Cursor conversations carry no per-message times: every moment of a Cursor conversation updated in this period is counted, including its older history."
+  for a in "${!missing_agents[@]}"; do cmd="$a"; [[ "$a" != cursor ]] || cmd=cursor-agent; printf 'not judged: %s -> the %s command is not installed, so its moments cannot be judged\n' "$a" "$cmd"; done
   printf 'Candidate moments (an agent reacting to a failure or admitting an error): %s; judged: %s%s\n' "$total_cands" "$judged_n" "$( (( total_cands > LIMIT )) && printf ' (limit %s)' "$LIMIT" || true)"
   printf '  found by the agent itself: %s\n' "$self_n"
   printf '  pointed out by the user or a reviewer: %s\n' "$prompted_n"
@@ -382,5 +403,6 @@ fi
 printf '\n## How to read this\n'
 printf -- "- Must-fix means the reviewing model's own label for a problem caused by the change that had to be fixed; it is not a count of bugs that reached users.\n"
 printf -- '- The self-check counts moments, not distinct bugs: one mistake can show up in several things an agent said. It counts what an agent said out loud after a failure or in a known admission, as judged by its own model; quiet fixes are not seen and the model can be wrong. Check any number with: sno catch-report self --since %s --list\n' "$SINCE"
+(( sessions_cursor == 0 )) || printf -- '- %s\n' "Cursor conversations carry no per-message times: every moment of a Cursor conversation updated in this period is counted, including its older history."
 printf -- '- The records do not say who wrote the code; %s of %s new findings are still undecided, so nobody has ruled them real or false.\n' "$unrul" "$fnew"
-printf 'Read from %s conversations and %s reviews on this machine.\n' "$((sessions_claude + sessions_codex))" "${reviews:-0}"
+printf 'Read from %s conversations and %s reviews on this machine.\n' "$((sessions_claude + sessions_codex + sessions_cursor))" "${reviews:-0}"
