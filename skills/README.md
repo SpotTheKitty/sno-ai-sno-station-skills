@@ -5,6 +5,49 @@ its category: `<category>/<unit>/`. `../registry.yaml` records the same category
 Category codes and order are fixed: J M S H T R. A skill that ships inside another unit's
 family but belongs to a different category is listed under its own category below.
 
+## Sno GPU requests
+
+Every skill using Sno GPU follows this contract, whether it calls the GPU directly or
+delegates to a Sno command/service. It also applies when adding a GPU call to an existing
+skill. The purpose is to distinguish the software sending a request, the project being
+worked on, and the authenticated person or machine; none substitutes for another.
+
+The transport that actually sends each GPU HTTP attempt must supply:
+
+| Header | Value |
+|---|---|
+| `X-Sno-Source` | The sending repository's exact Git slug, fixed in its shared GPU transport. |
+| `X-Sno-Workload` | The invoking feature's stable workload; RSI uses `rsi`. |
+| `X-Request-ID` | A fresh UUID v4 generated inside each HTTP attempt, including every retry; never in a client's static headers. |
+| `X-Sno-Operation` | Optional existing business operation ID; retain its billing grouping meaning. |
+| `traceparent` | Optional existing distributed trace context. |
+
+Source and workload use lowercase ASCII letters, digits and hyphens, at most 64 characters.
+New repositories and workloads need no registration or approval. Keep headers
+out of prompts and model request bodies. Record each attempt ID with status or network/
+timeout failure in the caller log, and read the response's `X-Request-ID`. Preserve current
+credentials, model parameters, retry and timeout behavior.
+
+For delegated calls, use the existing command/API and its supported project/session/run
+fields. Preserve each session's actual project; the sender's current directory is not the
+project for every session in a batch. The receiving service must associate the context actually
+used by a model call with that call's request ID. A call can involve multiple projects;
+missing or unresolvable context stays unknown. Do not invent CLI flags, headers or request
+fields, or bypass a Sno service merely to add GPU headers. If a necessary field is missing,
+record the command/API, missing context and affected attribution for its owning component.
+
+Do not send `X-Sno-User-ID`, `X-Sno-Machine-ID`, email, account names, host fingerprints or
+Helicone credentials. Uploaded `user_id` values are session context, not authenticated
+billing identities. The GPU service obtains verified `subjectId` and optional `machineUuid`
+through admission; routes using shared internal credentials have no verified customer
+identity. GPU HTTP callers send only to Sno GPU; the GPU service owns its metadata-only
+Helicone upload. Delegating skills continue using the existing Sno command/service.
+
+Missing diagnostic metadata must not reject an otherwise valid model request. Log failed
+metadata recording with operation, target, error and affected attribution; continue inference
+and unaffected work. A failed model request remains failed. Health and model-list probes
+are not model inference calls, and other model providers do not receive these GPU headers.
+
 ## J · Peer Review & Audit
 
 Colleagues review each other's work, and nothing counts as done until it passes audit.

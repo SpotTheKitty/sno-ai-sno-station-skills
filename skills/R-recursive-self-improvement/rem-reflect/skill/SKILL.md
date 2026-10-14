@@ -40,6 +40,30 @@ command, when installed, can schedule the daily run. Without a scheduler the com
 `status` reports that the loop is not armed. If `node` is older, install a current Node and
 retry; nothing here downloads or bundles a runtime.
 
+## Sno GPU attribution
+
+Use the existing `sno rem judge`, `sno rem recall` and `sno rem verdict` path; this skill
+does not send GPU HTTP requests. The receiving service must supply the GPU headers: its own
+repository slug as `X-Sno-Source`, `rsi` as `X-Sno-Workload`, and a new UUID v4 as
+`X-Request-ID` generated inside each HTTP attempt, including retries, never in static client
+headers. Keep any existing operation ID's
+business and billing meaning. Do not add GPU headers to the session JSON or bypass Sno.
+
+The nightly upload already carries `run_id` and each session's `project_id`, `session_id`
+and `user_id`; first-message recall carries its actual `project_id`. Preserve these fields
+and per-session project boundaries, including batches spanning multiple projects. Verdicts
+use their existing judgment ID to refer to stored context. The service must associate the
+project context actually used by each model call with its request ID; this skill cannot
+claim that GPU headers or logging associations are deployed merely because the upload
+contains the fields; server integration needs its own verification.
+
+Session `user_id` is context, not proof of who pays. Verified user/machine identities come
+from service authentication/admission, never client-supplied identity headers. Do not send
+directly to Helicone. Local agent-account calls remain on their existing provider path;
+only actual Sno GPU attempts use the GPU contract. Missing project attribution remains
+unknown and is reported without disabling otherwise valid work. Any future direct GPU
+call must satisfy the shared Sno GPU request contract in the skill library's `skills/README.md`.
+
 ## Commands
 
 - `sno rem-reflect run` — harvest recent session versions and, in `agent-native` or `rem-enhanced`,

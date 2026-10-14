@@ -59,6 +59,24 @@ binary, so it is the authority for every flag.
   message to the owner; do not retry in a loop.
 - Anything that changes the machine is run only when the owner asked for it.
 
+## Sno GPU attribution
+
+When a Sno command invokes Sno GPU, keep the real project/session/run context in the
+command's supported inputs; read its installed help before choosing flags or JSON fields.
+For RSI, `sno rem judge` already accepts a run with per-session project context and
+`sno rem recall` accepts `project_id`. Do not relabel a mixed-project run as the shell's
+current repository, invent attribution flags, or call GPU/Helicone directly to bypass Sno.
+
+The component sending GPU HTTP must supply its own repository slug as `X-Sno-Source`, the
+stable feature workload (`rsi` for RSI) as `X-Sno-Workload`, and a fresh UUID v4 as
+`X-Request-ID` generated inside every attempt, including retries, never in static client
+headers. New repositories and workloads need no registration or approval. The sender must
+record status or failure with that ID and preserve existing operation IDs. Authentication/admission supplies verified user
+and machine identities; never add caller-supplied user/machine identity headers. Missing
+diagnostic context is recorded as unknown without rejecting valid model work. These rules
+also apply to future GPU-backed commands; the full caller contract is in the skill library's
+`skills/README.md`. Other model providers and health/model-list probes keep their own behavior.
+
 ## Task map
 
 | Task | Command |
