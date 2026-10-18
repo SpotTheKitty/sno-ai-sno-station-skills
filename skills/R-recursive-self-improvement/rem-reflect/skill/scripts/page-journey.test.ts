@@ -26,7 +26,7 @@ function cloudPageReply(t: import('node:test').TestContext): void {
     "const fs = require('node:fs');",
     "const args = process.argv.slice(2).join(' ');",
     "if (args === 'station consent') { console.log('full'); process.exit(0); }",
-    "if (args !== 'rem judge') process.exit(2);",
+    "if (args !== 'rem judge --json') process.exit(2);",
     "const batch = JSON.parse(fs.readFileSync(0, 'utf8'));",
     'const halves = batch.halves.map(half => ({',
     '  harness: half.harness, attention: [], lessons: [], proposals: [], read_judgments: [],',

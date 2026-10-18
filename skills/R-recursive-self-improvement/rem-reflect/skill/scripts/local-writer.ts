@@ -29,10 +29,11 @@ interface WrittenLesson {
   skill_target: string | null; reminder_line: string | null;
 }
 
-function doneKeys(store: string): Set<string> {
+export function locallyWrittenSessions(store: string): Set<string> {
   const path = join(store, reflectionFiles.localWriter);
   if (!existsSync(path)) return new Set();
-  return new Set(readFileSync(path, 'utf8').split('\n').filter(Boolean).map(line => String((JSON.parse(line) as { trace_key: unknown }).trace_key)));
+  return new Set(readFileSync(path, 'utf8').split('\n').filter(Boolean)
+    .map(line => String((JSON.parse(line) as { trace_key: unknown }).trace_key)));
 }
 
 // Sessions with the most failed calls and typed owner lines go first; a session with neither has little to teach.
@@ -103,8 +104,8 @@ function stageReminder(store: string, config: Config, runId: string, harness: st
 // harness. Nothing is sent to Sno: the session text goes only to the user's own agent CLI and its model account. A lesson
 // is not recalled until the owner accepts it. Sno CLI serves the prompt from its compiled binary; the public skill carries no prompt file.
 export function writeLocally(store: string, config: Config, runId: string, eligible: readonly Trace[], backend: Backend,
-  log: string[], now: Date): { asked: number; lessons: number; proposals: number; unavailable: number } {
-  const done = doneKeys(store);
+  log: string[], now: Date, allowanceUsedUp: boolean = false): { asked: number; lessons: number; proposals: number; unavailable: number } {
+  const done = locallyWrittenSessions(store);
   const settings = loadLocalSettings(store, log);
   const result = { asked: 0, lessons: 0, proposals: 0, unavailable: 0 };
   let instructions: string | undefined;
@@ -114,7 +115,7 @@ export function writeLocally(store: string, config: Config, runId: string, eligi
     let staged = false;
     for (const { trace, events } of pick(eligible, harness, done)) {
       try {
-        if (stationCell('R5') !== 'host') { log.push('R5 local lesson generation: off'); continue; }
+        if (!allowanceUsedUp && stationCell('R5') !== 'host') { log.push('R5 local lesson generation: off'); continue; }
       } catch (error) {
         if (!(error instanceof SettingsUnavailable)) throw error;
         log.push(`local writer: R5 unavailable: ${error.message}; no model call made`);
@@ -139,7 +140,7 @@ export function writeLocally(store: string, config: Config, runId: string, eligi
           kind: 'model' }).stdout;
       } catch (error) {
         if (!(error instanceof BackendError) && !(error instanceof CeilingReached)) throw error;
-        log.push(`${trace.trace_id}: local writer unavailable (${error.message})`);
+        log.push(`${trace.trace_id}: local writer unavailable (${cli}: ${error.message})`);
         result.unavailable++;
         continue;
       }

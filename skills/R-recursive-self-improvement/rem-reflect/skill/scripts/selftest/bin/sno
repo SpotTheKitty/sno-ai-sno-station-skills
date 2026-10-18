@@ -27,7 +27,7 @@ if (command === 'station consent') {
   process.stdout.write('full\n');
   process.exit(0);
 }
-if (command !== 'rem judge') {
+if (command !== 'rem judge --json') {
   process.stderr.write(`unexpected sno command: ${command}\n`);
   process.exit(2);
 }

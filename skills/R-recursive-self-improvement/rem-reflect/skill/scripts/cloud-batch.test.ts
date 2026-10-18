@@ -97,7 +97,7 @@ test('a lost cloud answer leaves the exact batch for the next entry to replay un
     if (oldCapture === undefined) delete process.env.REM_REQUEST_CAPTURE; else process.env.REM_REQUEST_CAPTURE = oldCapture;
   });
 
-  const firstBatch = { schema_version: 1, run_id: '20260921-0100', halves: [], catalogue: [], usage_reads: [], outcome_summary: {} };
+  const firstBatch = { schema_version: 1, run_id: '20260921-0100', halves: [], catalogue: [], usage_reads: [], usage_shown: [], outcome_summary: {} };
   assert.throws(() => sendCloudBatch(store, firstBatch), /response lost/);
   const replacement = { ...firstBatch, run_id: '20260921-0300', outcome_summary: { changed: true } };
   const response = sendCloudBatch(store, replacement);
@@ -134,7 +134,7 @@ test('a request holding half of an emoji reaches sno as well-formed JSON text', 
     if (oldCapture === undefined) delete process.env.REM_REQUEST_CAPTURE; else process.env.REM_REQUEST_CAPTURE = oldCapture;
   });
   const batch = { schema_version: 1, run_id: '20260923-0000', halves: [{ text: 'React with \ud83d[… 12 characters omitted …]' }, { signature: 'patch\0skills/peer-review/skill' }],
-    catalogue: [], usage_reads: [], outcome_summary: {} };
+    catalogue: [], usage_reads: [], usage_shown: [], outcome_summary: {} };
   sendCloudBatch(store, batch);
   assert.doesNotMatch(readFileSync(capture, 'utf8'), /\\u[dD][89abAB][0-9a-fA-F]{2}(?!\\u[dD][c-fC-F])/);
   // the cloud's JSON column refuses NUL, which older proposal signatures and some session text carry
@@ -157,7 +157,7 @@ test('an answered batch keeps only what later nights read, so the store does not
   process.env.PATH = `${bin}:${oldPath ?? ''}`;
   t.after(() => { if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath; });
   const catalogue = [{ name: 'heartbeat', path: 'claude/heartbeat/SKILL.md', skill_md: 'name: heartbeat' }];
-  const batch = { schema_version: 1, run_id: '20260921-0100', catalogue, usage_reads: [], outcome_summary: {},
+  const batch = { schema_version: 1, run_id: '20260921-0100', catalogue, usage_reads: [], usage_shown: [], outcome_summary: {},
     halves: [{ harness: 'codex', sessions: [{ session_id: 's1', version: 2, chunks: [{ text: 'secret session text '.repeat(1000) }] }] }] };
   sendCloudBatch(store, batch);
   const saved = readFileSync(join(store, 'staging', '20260921-0100', 'cloud-request.json'), 'utf8');

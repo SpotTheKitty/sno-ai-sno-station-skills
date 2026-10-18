@@ -150,7 +150,7 @@ test('a native run stores history links without cloud judgments and its later lo
   writeFileSync(join(bin, 'sno'), `#!/usr/bin/env node
 const fs = require('node:fs');
 const args = process.argv.slice(2);
-if (args.join(' ') === 'rem judge') {
+if (args.join(' ') === 'rem judge --json') {
   const batch = JSON.parse(fs.readFileSync(0, 'utf8'));
   fs.writeFileSync(process.env.REM_NATIVE_REQUEST, JSON.stringify(batch));
   console.log(JSON.stringify({schema_version:1,run_id:batch.run_id,history_acknowledged:true,

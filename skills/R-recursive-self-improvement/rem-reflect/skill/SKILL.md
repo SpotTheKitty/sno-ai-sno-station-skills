@@ -1,6 +1,6 @@
 ---
 name: rem-reflect
-description: "Learn daily from this machine's Claude Code, Codex, Hermes, OpenClaw and Cursor sessions. Review skill changes and lessons with accept/reject/tbd; recall lessons at session start."
+description: "Self Learning from this machine's Claude Code, Codex, Hermes, OpenClaw and Cursor sessions. Decide skill changes and lessons with accept/reject/tbd; recall lessons at session start."
 requires:
   programs: []
   harness:
@@ -11,7 +11,7 @@ requires:
     - {slot: 2.pre-turn-context-injection, need: preferred}
 ---
 
-# rem-reflect — the local experience loop
+# Self Learning
 
 > **Before you use it.** Sno Station sets the sharing level when it installs, by mode: `full` for `agent-native` and
 > `rem-enhanced`, `metadata-only` for `local-first`; it never overwrites a choice you already made. At `full`, this tool sends
@@ -21,7 +21,7 @@ requires:
 > "What a run reads, copies and uploads" below lists everything.
 > Turn uploading off at any time with `sno station consent off`.
 
-`rem-reflect` reads this machine's Claude Code, Codex, Hermes, OpenClaw and Cursor sessions once a day. When the Sno Station
+Self Learning (`rem-reflect`) reads this machine's Claude Code, Codex, Hermes, OpenClaw and Cursor sessions once a day. When the Sno Station
 settings select `agent-native` or `rem-enhanced`, each session's own CLI (on the
 host's default model) conservatively decides keep/drop and labels its outcome. Each completed run
 is sent through `sno rem judge`; that command permits session and skill uploads only at full consent.
@@ -31,6 +31,10 @@ for delivering later user verdicts. `local-first` sends nothing: each night it a
 about the few sessions with the most failures and owner corrections, and stores the lessons and at most one
 skill reminder per harness that it can quote verbatim from the session, for you to accept or reject.
 Local adoption still waits for the owner (here, you: the person who owns the machine and its skills).
+When the weekly allowance is used up, Self Learning uses your own agent's model until it resets,
+even when `R5` is off for the upload mode. Its report gives the reset time in your configured time zone
+and tells an unlinked computer how to link. Session versions already learned locally leave every unanswered
+cloud request, and later requests leave those versions out; new versions and other sessions remain eligible. Each night tries the cloud first.
 
 **What a run reads, copies and uploads.** A run reads `~/.claude/projects`, `~/.codex/sessions`, `~/.cursor/projects/*/agent-transcripts`, Hermes's `state.db` read-only via `python3`, and OpenClaw's `sessions list --json` and `export-trajectory` events (seven days on first run, then continuing; sessions must be quiet for thirty minutes). It skips Hermes's first-user-message `[sno-oneshot]` marker and OpenClaw's `:explicit:sno-oneshot-` keys. It reads Claude's `history.jsonl`, the repository the Sno Cursor hooks recorded for each Cursor conversation (`~/.sno/cursor/conversations/`; a conversation with no record is kept without a project), each session's git `origin`, and installed `SKILL.md` files under `~/.claude/skills`, `~/.codex/skills`, `~/.hermes/skills` and `~/.openclaw/skills`; `HERMES_HOME` and `OPENCLAW_STATE_DIR` override the new homes. Accepted changes use those same installed roots. Locally redacted copies stay in `~/.sno/experience` (or `$REM_REFLECT_STORE`). Claude and Codex turns run `claude -p` and `codex exec` on your existing login in place, with your settings, hooks, plugins and MCP servers left out and no session saved; a Claude or Codex login is never copied, because a copied login that renews signs the original out. Hermes and OpenClaw use their own login and HOME. Their labeling and lesson calls are marked Station one-shots and limited to 280 seconds. For Cursor it copies `~/.config/cursor/auth.json` on Linux, or links the login keychains on macOS, into `<store>/.loop-home/cursor`, which Cursor runs use as their home so none of your Cursor hooks fire. Cursor labeling turns send the rendered session to your own Cursor account. Only `agent-native` or `rem-enhanced` at consent `full` uploads kept session text, tool-call targets/errors, project ids and complete installed skill bodies to Sno. Secret redaction is best effort. `off` or `metadata-only` uploads none of it. Installation selects `metadata-only` for `local-first`, `full` otherwise, without overwriting an existing choice; change it with `sno station consent off|metadata-only|full`.
 
@@ -74,9 +78,10 @@ call must satisfy the shared Sno GPU request contract in the skill library's `sk
   report. `local-first` uploads nothing; for up to three sessions per harness a night it asks that session's own
   CLI for one lesson and stores each answer whose quotes occur verbatim in the session as a page, a listed lesson
   and, for a lapse in using an installed skill it read, one staged reminder proposal; the report lists them with
-  their accept commands, and a session is asked about once. A missing settings file finishes a no-upload day
+  their accept commands, and each session version is asked about once; a session that grows can be asked again. A missing settings file finishes a no-upload day
   naming the reason.
-  A failed or rejected send is logged with the run id and leaves the local day successful;
+  An allowance refusal runs Self Learning on your own agent's model; the night fails if every selected session's CLI is unavailable.
+  Other failed or rejected sends are logged with the run id and leave the local day successful;
   the saved request can be sent on the next daily run. Held human verdicts are retried at the
   next entry even when today's reflection already succeeded.
 - `sno rem-reflect run --trigger timer|manual` — records what started the run; the scheduled daily
@@ -139,7 +144,7 @@ Set these up once. The program never edits these files itself, except `~/.cursor
   read a listed lesson in full from the recall index.
 - **Check the Sno Station settings.** `sno setup` writes `~/.sno/settings.json` (or
   `$SNO_PROFILE_DIR/settings.json`). Its current `mode` controls daily sharing. The `modelCalls` rows select local labeling
-  and first-prompt lookup. `R5` runs Local First lesson generation on the host and is off in the other modes; the published older table without R5 uses that same default. Its prompt is served by `sno skills rem-reflect-local-writer` from the CLI binary, not a public skill file: `R2` labels sessions on each session's own CLI with the host's default model, `R3`
+  and first-prompt lookup. `R5` runs Local First lesson generation on the host and is off in the other modes, except when the weekly allowance is used up; the published older table without R5 uses that same default. Its prompt is served by `sno skills rem-reflect-local-writer` from the CLI binary, not a public skill file: `R2` labels sessions on each session's own CLI with the host's default model, `R3`
   names the nightly upload and `R4` the first-prompt lookup. Daily runs and verdicts share by
   `mode`: both `agent-native` and `rem-enhanced` call the Sno cloud through `sno rem`; those commands
   enforce full consent. Only `rem-enhanced` uses the cloud judgments. `R4` still needs its cell

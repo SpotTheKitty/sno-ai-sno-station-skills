@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { appendFileSync, existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import type { Config } from './config.ts';
 import { reflectionFiles, isObject, limits, skillRoots, stationCell, readStationSettings } from './config.ts';
@@ -22,6 +22,7 @@ import { readCalls } from './calls.ts';
 import { skillImpact } from './report.ts';
 import { lessonProject, observe } from './observe.ts';
 import { atomicWrite, commitStore, writeJson } from './store.ts';
+import { locallyWrittenSessions } from './local-writer.ts';
 
 export interface CloudResponse {
   schema_version: 1;
@@ -29,6 +30,11 @@ export interface CloudResponse {
   history_acknowledged: boolean;
   history_links: unknown[];
   halves: unknown[];
+}
+
+export class AllowanceUsedUp extends Error {
+  readonly reset_at: string;
+  constructor(message: string, resetAt: string) { super(message); this.reset_at = resetAt; }
 }
 
 export function localConsent(): 'off' | 'metadata-only' | 'full' {
@@ -90,6 +96,8 @@ export function flushCloudVerdicts(store: string): { sent: number; pending: numb
 
 export function buildCloudBatch(store: string, config: Config, runId: string, retained: readonly Trace[],
   labels: ReadonlyMap<string, Label>, includeHistory: boolean) {
+  const written = locallyWrittenSessions(store);
+  retained = retained.filter(trace => !written.has(traceKey(trace)));
   const selectedSessions = new Set(retained.map(trace => trace.session_id));
   const ledger = readLedger(store);
   const halves = (['claude-code', 'codex', 'hermes', 'openclaw', 'cursor'] as const).map(harness => ({
@@ -140,12 +148,20 @@ export function sendCloudBatch(store: string, batch: {
     typeof value === 'string' ? value.toWellFormed().replaceAll('\0', '') : value);
   if (!isObject(sent) || typeof sent.run_id !== 'string') throw new Error('cloud batch: pending request has no run id');
 
-  const result = spawnSync('sno', ['rem', 'judge'], { input, encoding: 'utf8', maxBuffer: Infinity, timeout: waitMs, killSignal: 'SIGKILL' });
+  const result = spawnSync('sno', ['rem', 'judge', '--json'], { input, encoding: 'utf8', maxBuffer: Infinity, timeout: waitMs, killSignal: 'SIGKILL' });
   if ((result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
     throw new Error(`sno rem judge gave no answer within ${Math.round(waitMs / 60_000)} minutes; the saved request is resent on the next run`);
   }
   if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(result.stderr?.trim() || `sno rem judge exited ${result.status}`);
+  if (result.status !== 0) {
+    let error: unknown;
+    try { error = JSON.parse(result.stdout); } catch { /* Other failures keep their existing stderr message. */ }
+    if (isObject(error) && error.error === 'allowance_used_up' && typeof error.message === 'string' && typeof error.reset_at === 'string') {
+      throw new AllowanceUsedUp(error.message, error.reset_at);
+    }
+    const message = isObject(error) && typeof error.message === 'string' ? error.message : '';
+    throw new Error(message || result.stderr?.trim() || `sno rem judge exited ${result.status}`);
+  }
   if (!result.stdout) throw new Error('cloud batch: empty judgment response');
   const response: unknown = JSON.parse(result.stdout);
   if (!isObject(response) || response.schema_version !== 1 || response.run_id !== sent.run_id
@@ -156,6 +172,38 @@ export function sendCloudBatch(store: string, batch: {
   writeJson(join(directory, 'cloud-response.json'), response);
   slimAnsweredRequest(requestPath);
   return response as unknown as CloudResponse;
+}
+
+// Only locally learned session versions leave unanswered uploads; other versions stay pending.
+export function removeLocallyWrittenSessions(store: string, log: string[]): void {
+  const written = locallyWrittenSessions(store);
+  if (!written.size) return;
+  const staging = join(store, reflectionFiles.staging);
+  for (const id of readdirSync(staging)) {
+    const path = join(staging, id, 'cloud-request.json');
+    if (!existsSync(path) || existsSync(join(staging, id, 'cloud-response.json'))) continue;
+    try {
+      const request: unknown = JSON.parse(readFileSync(path, 'utf8'));
+      if (!isObject(request) || !Array.isArray(request.halves)) continue;
+      const halves = request.halves.filter(isObject).map(half => ({ ...half,
+        sessions: (Array.isArray(half.sessions) ? half.sessions : []).filter(session =>
+          !isObject(session) || !written.has(`${session.user_id}/${half.harness}/${session.trace_id}`)),
+      })).filter(half => half.sessions.length > 0);
+      if (!halves.length) { unlinkSync(path); continue; }
+      const sessions = new Set(halves.flatMap(half => half.sessions.filter(isObject).map(session => session.session_id)));
+      const updated: Record<string, unknown> = { ...request, halves };
+      for (const key of ['usage_reads', 'usage_shown']) {
+        if (Array.isArray(updated[key])) updated[key] = updated[key].filter(row => isObject(row) && sessions.has(row.session_id));
+      }
+      if (JSON.stringify(updated) !== JSON.stringify(request)) {
+        const nextRunId = `${id}-local-${randomUUID()}`;
+        writeJson(join(staging, nextRunId, 'cloud-request.json'), { ...updated, run_id: nextRunId });
+        unlinkSync(path);
+      }
+    } catch (error) {
+      log.push(`cloud run ${id} request not edited: ${String(error)}; full request kept, cloud may judge locally learned sessions again after reset`);
+    }
+  }
 }
 
 // Once the cloud has answered, later nights read only the uploaded skill catalogue and which session versions were

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { applyCloudHistoryLinks, applyCloudResponse, buildCloudBatch, sendCloudBatch, slimAnsweredRequest } from './cloud.ts';
+import { homedir } from 'node:os';
+import { AllowanceUsedUp, applyCloudHistoryLinks, applyCloudResponse, buildCloudBatch, removeLocallyWrittenSessions, sendCloudBatch, slimAnsweredRequest } from './cloud.ts';
 import type { CloudResponse } from './cloud.ts';
 import { isObject, reflectionFiles, SettingsUnavailable, stationCell, readStationSettings } from './config.ts';
 import type { Config } from './config.ts';
@@ -84,6 +85,7 @@ export function reflect(store: string, config: Config, runId: string, backend: B
       ...decisionLines(lessons, proposals)] };
   }
 
+  removeLocallyWrittenSessions(store, log);
   const requestPath = join(staging, runId, 'cloud-request.json');
   if (!existsSync(requestPath)) {
     try {
@@ -93,6 +95,8 @@ export function reflect(store: string, config: Config, runId: string, backend: B
   }
 
   let uploaded = 0;
+  let local: ReturnType<typeof writeLocally> | undefined;
+  const fallbackLines: string[] = [];
   const responses: CloudResponse[] = [];
   let currentAcknowledged = saved.includes(runId);
   for (;;) {
@@ -105,6 +109,24 @@ export function reflect(store: string, config: Config, runId: string, backend: B
       const batch = buildCloudBatch(store, config, runId, remaining, labels, !historyAcknowledged);
       response = sendCloudBatch(store, batch);
     } catch (error) {
+      if (error instanceof AllowanceUsedUp) {
+        log.push(`cloud run ${runId}: ${error.message}`);
+        local = writeLocally(store, config, runId, remaining, backend, log, now, true);
+        removeLocallyWrittenSessions(store, log);
+        const reset = new Intl.DateTimeFormat('en-US', { timeZone: config.time_zone,
+          month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(error.reset_at));
+        fallbackLines.push(`Self Learning ran on your own agent's model tonight: your weekly allowance is used up, resets ${reset}.`,
+          `Local sessions asked: ${local.asked}`, `New lessons: ${local.lessons}`, `New proposals: ${local.proposals}`);
+        const identityPath = process.env.SNO_IDENTITY_PATH ?? join(process.env.SNO_PROFILE_DIR ?? join(homedir(), '.sno'), 'identity.json');
+        try {
+          const identity: unknown = existsSync(identityPath) ? JSON.parse(readFileSync(identityPath, 'utf8')) : {};
+          if (!isObject(identity) || !identity.user_account_id) {
+            fallbackLines.push('This computer gets one tenth of the free allowance until you link it: sno account claim.');
+          }
+        } catch (identityError) { log.push(`account identity not read at ${identityPath}: ${String(identityError)}`); }
+        fallbackLines.push(...log.filter(line => line.startsWith('local writer:')));
+        break;
+      }
       const pendingRun = readdirSync(staging).sort().find(id =>
         existsSync(join(staging, id, 'cloud-request.json')) && !existsSync(join(staging, id, 'cloud-response.json')));
       log.push(`cloud run ${pendingRun ?? runId} send failed: ${String(error)}; local run and report unchanged`);
@@ -141,7 +163,8 @@ export function reflect(store: string, config: Config, runId: string, backend: B
   const evidence = responses.map(response => join(staging, response.run_id, 'cloud-request.json'));
   const localOutcome = new Map(traces.map(trace => [trace.trace_id, labels.get(traceKey(trace))?.outcome]));
   // The cloud's response names its ranking basis and predicted outcome with its own wire names ('jev', jev_outcome); the report prints "cloud".
-  return { failed: false, report: [...counts,
+  return { failed: local !== undefined && local.asked === 0 && local.unavailable > 0, report: [...counts,
+    ...fallbackLines,
     'Local session outcomes:', ...retained.map(trace => `${trace.trace_id}: ${labels.get(traceKey(trace))?.outcome ?? 'unknown'}`),
     ...(enhanced && responses.length ? [`Uploaded: ${uploaded}`,
     `Cloud-ranked: ${attention.filter(row => row.basis === 'jev').length}`,

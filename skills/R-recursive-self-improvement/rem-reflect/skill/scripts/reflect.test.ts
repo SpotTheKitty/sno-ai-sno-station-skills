@@ -39,7 +39,7 @@ test('a failed upload preserves a successful day and the next day retries the sa
 const fs = require('node:fs');
 const args = process.argv.slice(2).join(' ');
 if (args === 'station consent') { console.log('full'); process.exit(0); }
-if (args !== 'rem judge') process.exit(2);
+if (args !== 'rem judge --json') process.exit(2);
 const input = fs.readFileSync(0, 'utf8');
 if (!fs.existsSync(${JSON.stringify(marker)})) {
   fs.writeFileSync(${JSON.stringify(first)}, input);
