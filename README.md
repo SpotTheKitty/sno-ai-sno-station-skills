@@ -43,22 +43,18 @@ fails is not published.
 
 ## Install
 
-*Last updated 2026-10-08.* The easiest way: tell your AI agent `install sno.ai from GitHub`.
+*Last updated 2026-10-19.* The easiest way: tell your AI agent `install sno.ai from GitHub`.
 
-Or do it yourself. Install the `sno` command once, then run `sno setup` for each agent you use.
-It installs every skill in this repository, plus the small programs they call (each one runs as
-`sno <name>`), into every agent it finds:
+Or do it yourself with one command. It installs the `sno` command and sets up Sno Station, which puts
+every skill in this repository, plus the small programs they call (each one runs as `sno <name>`),
+into every agent it finds:
 
 ```bash
-# Install the sno command once
 sh -c 'sno_installer_body=$(curl -fsSL https://sno.ai/install) && printf "%s\n" "$sno_installer_body" | sh'
-# Claude Code
-sno setup --harness claude
-# Codex CLI
-sno setup --harness codex
 ```
 
-`sno setup` also supports OpenClaw and Hermes Agent. Each skill declares what it needs from the
+It supports Claude Code, Codex, OpenClaw and Hermes Agent. If you install another agent later, run
+`sno setup` to connect it too. Each skill declares what it needs from the
 agent (a shell, background processes, a hook that adds context before each turn), and setup
 reads that declaration to install the skill fully, install it in a reduced form, or skip it on
 an agent that cannot run it. You never get a skill that silently cannot work.
