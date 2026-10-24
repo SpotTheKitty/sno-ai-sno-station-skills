@@ -10,6 +10,11 @@ import { traceKey, validateEvidence } from './evidence.ts';
 import type { Evidence } from './evidence.ts';
 import type { Trace } from './harvest.ts';
 import { eventLines } from './labeler.ts';
+import { readCalls } from './calls.ts';
+import type { CallRecord } from './calls.ts';
+import { externalVerdicts, verdictRef } from './verdicts.ts';
+import { lessonTrigger } from './trigger.ts';
+import type { Verdict, VerdictRef } from './verdicts.ts';
 import { appendLedger } from './ledger.ts';
 import { loadLocalSettings } from './local-settings.ts';
 import { appendRows } from './lessons.ts';
@@ -26,7 +31,7 @@ interface WrittenLesson {
   situation: { task_type: string; trigger: string; tools: string[] };
   advice: string; because: string; polarity: 'from_failure' | 'from_success';
   evidence: { line_start: number; line_end: number; quote: string }[];
-  skill_target: string | null; reminder_line: string | null;
+  skill_target: string | null; reminder_line: string | null; verdict_line: number;
 }
 
 export function locallyWrittenSessions(store: string): Set<string> {
@@ -36,17 +41,19 @@ export function locallyWrittenSessions(store: string): Set<string> {
     .map(line => String((JSON.parse(line) as { trace_key: unknown }).trace_key)));
 }
 
-// Sessions with the most failed calls and typed owner lines go first; a session with neither has little to teach.
-function pick(eligible: readonly Trace[], harness: Trace['agent_id'], done: ReadonlySet<string>): { trace: Trace; events: Set<number> }[] {
+// Only sessions with an external verdict can teach a lesson; among them, the most failed calls and typed owner lines go first.
+function pick(eligible: readonly Trace[], harness: Trace['agent_id'], done: ReadonlySet<string>):
+  { trace: Trace; events: Set<number>; calls: CallRecord[]; verdicts: Verdict[] }[] {
   return eligible.filter(trace => trace.agent_id === harness && !done.has(traceKey(trace)))
-    .map(trace => ({ trace, events: eventLines(trace) }))
-    .filter(item => item.events.size > 0)
+    .map(trace => { const calls = readCalls(trace); return { trace, events: eventLines(trace), calls, verdicts: externalVerdicts(calls) }; })
+    .filter(item => item.events.size > 0 && item.verdicts.length > 0)
     .sort((a, b) => b.events.size - a.events.size)
     .slice(0, limits.localSessionsPerHalf);
 }
 
-function promptFor(instructions: string, trace: Trace, events: ReadonlySet<number>, maxChars: number, windowLines: number): string {
-  const prefix = `${instructions}\n${reference('local-writer.schema.json')}\n${renderHeader(trace)}\n`;
+function promptFor(instructions: string, trace: Trace, events: ReadonlySet<number>, verdicts: readonly Verdict[], maxChars: number, windowLines: number): string {
+  const listed = verdicts.map(item => `${item.line} ${item.kind} ${item.passed ? 'passed' : 'failed'} ${item.command.split('\n')[0]}`).join('\n');
+  const prefix = `${instructions}\n${reference('local-writer.schema.json')}\n${renderHeader(trace)}\nExternal verdicts (line kind result command):\n${listed}\n`;
   const rendered = renderTrace(trace, loadRenderBudgets());
   const full = rendered.body.length + prefix.length <= maxChars;
   let body = '';
@@ -113,7 +120,7 @@ export function writeLocally(store: string, config: Config, runId: string, eligi
     [{ trace_key: traceKey(trace), run_id: runId, call_id: 'R5', result: outcome }]);
   for (const harness of ['claude-code', 'codex', 'hermes', 'openclaw', 'cursor'] as const) {
     let staged = false;
-    for (const { trace, events } of pick(eligible, harness, done)) {
+    for (const { trace, events, calls, verdicts } of pick(eligible, harness, done)) {
       try {
         if (!allowanceUsedUp && stationCell('R5') !== 'host') { log.push('R5 local lesson generation: off'); continue; }
       } catch (error) {
@@ -136,7 +143,7 @@ export function writeLocally(store: string, config: Config, runId: string, eligi
       const cli: Cli = harness === 'claude-code' ? 'claude' : harness;
       let stdout: string;
       try {
-        stdout = backend.spawn({ cli, cwd, input: promptFor(instructions, trace, events, settings.labeler_input_max_chars, settings.labeler_event_window_lines),
+        stdout = backend.spawn({ cli, cwd, input: promptFor(instructions, trace, events, verdicts, settings.labeler_input_max_chars, settings.labeler_event_window_lines),
           kind: 'model' }).stdout;
       } catch (error) {
         if (!(error instanceof BackendError) && !(error instanceof CeilingReached)) throw error;
@@ -147,6 +154,7 @@ export function writeLocally(store: string, config: Config, runId: string, eligi
       result.asked++;
       let lesson: WrittenLesson | null;
       let evidence: Evidence[] = [];
+      let ref: VerdictRef | null = null;
       try {
         const value = firstObject(stdout);
         validateSchema(value, JSON.parse(reference('local-writer.schema.json')));
@@ -154,6 +162,9 @@ export function writeLocally(store: string, config: Config, runId: string, eligi
         if (lesson) {
           evidence = lesson.evidence.map(item => ({ ...item, trace_id: trace.trace_id }));
           validateEvidence(evidence, [trace]);
+          const cited = verdictRef(lesson, verdicts, calls);
+          if ('reason' in cited) throw new Error(cited.reason);
+          ref = cited.ref;
         }
       } catch (error) {
         log.push(`${trace.trace_id}: local writer answer refused: ${String(error)}`);
@@ -170,7 +181,8 @@ export function writeLocally(store: string, config: Config, runId: string, eligi
         count: 1, helped: 0, harmful: 0, measured: false, created_run: runId, project_id: trace.project_id, agent_id: trace.agent_id,
         user_id: trace.user_id, skill_target: skillTarget, scenario: lesson.situation, situation: lesson.situation,
         advice: lesson.advice, because: lesson.because, applies_to: `project:${trace.project_id}`, polarity: lesson.polarity,
-        evidence, counter_examples: 'not searched' }]);
+        evidence, counter_examples: 'not searched', verdict_ref: ref,
+        trigger_match: lessonTrigger(trace, evidence, line => log.push(`${trace.trace_id}: ${line}`)) }]);
       result.lessons++;
       if (!staged && lesson.class === 'EXECUTION_LAPSE' && skillTarget && lesson.reminder_line?.trim()) {
         staged = stageReminder(store, config, runId, harness, page, lesson.reminder_line.trim(), log);

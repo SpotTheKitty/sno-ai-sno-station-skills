@@ -12,6 +12,8 @@ import { readPages, writePage } from './pages.ts';
 import type { Page } from './pages.ts';
 import { writeJson } from './store.ts';
 import { fixtureConfig, makeStore, writeInstalledSkill } from './test-helpers.ts';
+import { fileURLToPath } from 'node:url';
+import type { Trace } from './harvest.ts';
 
 test('a saved cloud answer resumes after a page write without duplicating items or losing judgment ids', () => {
   const config = fixtureConfig();
@@ -32,6 +34,7 @@ test('a saved cloud answer resumes after a page write without duplicating items 
     project_id: 'p', agent_id: 'codex', user_id: 'local-u', skill_target: target,
     scenario: page.scenario, situation: page.scenario, advice: 'Check the missing condition', because: 'The failure recurs',
     applies_to: 'general', polarity: 'from_failure' as const, evidence: [], counter_examples: 'not searched' as const, listed: true,
+    verdict_ref: { line: 184, kind: 'test' as const, passed: false },
   };
   const proposal = { kind: 'patch' as const, target: join(target, 'SKILL.md'), region: 'body' as const,
     class: 'SKILL_DEFECT' as const, scenario: page.scenario, skills_used: [], skill_target: target,
@@ -62,6 +65,7 @@ test('a saved cloud answer resumes after a page write without duplicating items 
   assert.equal(readPages(store).length, 1);
   assert.equal((readPages(store)[0] as Page & { judgment_id?: string }).judgment_id, 'j-page');
   assert.deepEqual(readLessons(store).map(row => [row.lesson_id, row.judgment_id]), [[lesson.lesson_id, 'j-lesson']]);
+  assert.deepEqual(readLessons(store)[0].verdict_ref, { line: 184, kind: 'test', passed: false }, 'the cloud lesson lands with the verdict it cites');
   assert.equal(readLessons(store)[0].helped, 0, 'a read with no local outcome cannot count as helped');
   const staged = join(store, 'staging', response.run_id, 'codex', 'proposal.json');
   assert.equal(existsSync(staged), true);
@@ -171,4 +175,57 @@ test('a proposal this machine refuses is logged and skipped while the rest of th
   assert.equal(readLedger(store).some(row => row.type === 'proposal'), false);
   assert.match(readFileSync(join(store, 'staging', runId, 'run.log'), 'utf8'),
     /^proposal refused: run 20260926-0100 half claude-code target \/nowhere\/ghost-skill: /m);
+});
+
+test('a judgment on a lesson the session was shown at start, never read in full, is kept with its basis and counted', () => {
+  const config = fixtureConfig();
+  const store = makeStore(config);
+  const runId = '20261022-0100';
+  const situation = { task_type: 'fix', trigger: 'broken build', tools: [] };
+  appendRows(join(store, 'wiki', 'lessons.jsonl'), [{ lesson_id: 'L-shown', page_id: 'pg-shown', status: 'accepted', count: 1,
+    helped: 0, harmful: 0, measured: false, created_run: 'r', project_id: 'p', agent_id: 'codex', user_id: 'local-u', skill_target: null,
+    scenario: situation, situation, advice: 'read the compiler error', because: 'it names the line', applies_to: 'general',
+    polarity: 'from_failure', evidence: [], counter_examples: 'not searched', listed: true }]);
+  writeJson(join(store, 'raw', 'codex', 'shown-session.v1.json'), {
+    trace_id: 'shown-session.v1', session_id: 'shown-session', version: 1, agent_id: 'codex', user_id: 'local-u',
+    source_line_range: [1, 1], records: [],
+  });
+  writeJson(join(store, 'raw', 'codex', 'shown-session.v1.label.json'), { decision: 'keep', outcome: 'success', reason: 'built',
+    evidence: [], key_ranges: [], labeled_by: 'codex', model: 'm' });
+  appendRows(join(store, 'ledger', 'usage.jsonl'), [{ type: 'shown', session_id: 'shown-session', lesson_ids: ['L-shown'] }]);
+  writeJson(join(store, 'staging', runId, 'cloud-request.json'), {
+    schema_version: 1, run_id: runId, halves: [], catalogue: [], usage_reads: [], usage_shown: [], outcome_summary: {} });
+  const judgment = (lessonId: string) => ({ schema_version: 1 as const, run_id: runId, history_acknowledged: true, history_links: [],
+    halves: [{ harness: 'codex', attention: [], pages: [], lessons: [], proposals: [], log_entry: 'judged',
+      read_judgments: [{ trace_id: 'shown-session.v1', lesson_id: lessonId, followed: 'yes', effect: 'helped', basis: 'shown' }] }] });
+  applyCloudResponse(store, config, judgment('L-shown'));
+  assert.deepEqual(readLedger(store).filter(row => row.type === 'lesson-judgment').map(row => [row.lesson_id, row.basis, row.run_id]),
+    [['L-shown', 'shown', runId]]);
+  assert.deepEqual(readLessons(store).map(row => [row.helped, row.measured]), [[1, true]]);
+  // A judgment on a lesson this session neither saw nor read is still refused.
+  assert.throws(() => applyCloudResponse(store, config, judgment('L-never')), /no lesson shown or read/);
+});
+
+test('a cloud lesson whose evidence sits in a failed call lands with the trigger condition code computes from the raw trace', () => {
+  const config = fixtureConfig();
+  const store = makeStore(config);
+  const runId = '20261022-0200';
+  // The real Codex session (redacted) whose `uv run python -m pytest …` failed at line 710 and passed at 720.
+  const fixtures = JSON.parse(readFileSync(fileURLToPath(new URL('./selftest/fixtures/verdict-traces.json', import.meta.url)), 'utf8')) as Record<string, Trace>;
+  const trace = fixtures.codex_pytest;
+  writeJson(join(store, 'raw', 'codex', `${trace.trace_id}.json`), trace);
+  const situation = { task_type: 'fix', trigger: 'a pytest run fails on a self-referencing edge', tools: [] };
+  const lessonRow = (id: string, line: number) => ({ lesson_id: id, page_id: `pg-${id}`, status: 'candidate', count: 1, helped: 0, harmful: 0,
+    measured: false, created_run: runId, project_id: trace.project_id, agent_id: 'codex', user_id: trace.user_id, skill_target: null,
+    scenario: situation, situation, advice: 'Resolve self references before extracting edges', because: 'the test failed on them', applies_to: 'general',
+    polarity: 'from_failure', evidence: [{ trace_id: trace.trace_id, line_start: line, line_end: line, quote: 'pytest' }], counter_examples: 'not searched', listed: true });
+  writeJson(join(store, 'staging', runId, 'cloud-request.json'), {
+    schema_version: 1, run_id: runId, halves: [], catalogue: [], usage_reads: [], usage_shown: [], outcome_summary: {} });
+  applyCloudResponse(store, config, { schema_version: 1, run_id: runId, history_acknowledged: true, history_links: [],
+    halves: [{ harness: 'codex', attention: [], pages: [], proposals: [], read_judgments: [], log_entry: 'two lessons',
+      lessons: [{ judgment_id: 'j-failed', lesson: lessonRow('L-failed', 710) }, { judgment_id: 'j-passed', lesson: lessonRow('L-passed', 720) }] }] } as never);
+  const landed = new Map(readLessons(store).map(row => [row.lesson_id, row.trigger_match]));
+  // The signature is the last non-empty line of the stored error excerpt: pytest's own summary, counts kept.
+  assert.deepEqual(landed.get('L-failed'), { tool: 'shell', command_id: 'pytest', error_signature: '2 passed, 2 errors in 0.66s', path_glob: null });
+  assert.equal(landed.get('L-passed'), null, 'evidence inside the passing run binds to nothing');
 });

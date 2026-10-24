@@ -79,7 +79,7 @@ export function reflect(store: string, config: Config, runId: string, backend: B
     observe('rsi.proposal', { level: 'user', proposal_count: local?.proposals ?? 0, skills_touched: local?.proposals ?? 0 },
       join(staging, runId, reflectionFiles.runLog));
     // Every call failing (a logged-out or missing CLI) is a failed night, not "success, 0 lessons".
-    return { failed: local !== undefined && local.asked === 0 && local.unavailable > 0, report: [...counts, 'Uploaded: 0', `No-upload: ${reason}`,
+    return { failed: local !== undefined && local.asked === 0 && local.unavailable > 0, report: [...counts, ...signalLines(store, runId, now), 'Uploaded: 0', `No-upload: ${reason}`,
       ...(local ? [`Local sessions asked: ${local.asked}`, `New lessons: ${local.lessons}`, `New proposals: ${local.proposals}`] : []),
       ...log.filter(line => line.startsWith('local writer:')),
       ...decisionLines(lessons, proposals)] };
@@ -163,7 +163,7 @@ export function reflect(store: string, config: Config, runId: string, backend: B
   const evidence = responses.map(response => join(staging, response.run_id, 'cloud-request.json'));
   const localOutcome = new Map(traces.map(trace => [trace.trace_id, labels.get(traceKey(trace))?.outcome]));
   // The cloud's response names its ranking basis and predicted outcome with its own wire names ('jev', jev_outcome); the report prints "cloud".
-  return { failed: local !== undefined && local.asked === 0 && local.unavailable > 0, report: [...counts,
+  return { failed: local !== undefined && local.asked === 0 && local.unavailable > 0, report: [...counts, ...signalLines(store, runId, now),
     ...fallbackLines,
     'Local session outcomes:', ...retained.map(trace => `${trace.trace_id}: ${labels.get(traceKey(trace))?.outcome ?? 'unknown'}`),
     ...(enhanced && responses.length ? [`Uploaded: ${uploaded}`,
@@ -174,6 +174,31 @@ export function reflect(store: string, config: Config, runId: string, backend: B
     `Pages written: ${pages.length}`, ...pages] : []),
     ...decisionLines(lessons, proposals),
     ...(enhanced && responses.length ? [`Evidence: ${evidence.join(', ') || 'none'}`, ...lines] : [])] };
+}
+
+// The effect signal chain over the last seven nights: sessions shown lessons at start, full reads, the cloud's
+// judgments on them, and what the first-message cloud recall did. A dead link shows here instead of going unnoticed.
+function signalLines(store: string, runId: string, now: Date): string[] {
+  const since = now.getTime() - 7 * 86_400_000;
+  const path = join(store, reflectionFiles.usage);
+  const usage: Record<string, unknown>[] = [];
+  for (const line of existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(Boolean) : []) {
+    let row: unknown;
+    try { row = JSON.parse(line); } catch { continue; /* recall counts malformed lines; the report reads past them */ }
+    if (isObject(row) && typeof row.time === 'string' && Date.parse(row.time) >= since) usage.push(row);
+  }
+  const of = (type: string): Record<string, unknown>[] => usage.filter(row => row.type === type);
+  const sinceRun = new Date(since).toISOString().slice(0, 10).replaceAll('-', '');
+  const judgments = readLedger(store).filter(row => row.type === 'lesson-judgment' && typeof row.run_id === 'string' && row.run_id >= sinceRun);
+  const having = (key: string, value: string): number => judgments.filter(row => row[key] === value).length;
+  const tonight = readLessons(store).filter(lesson => lesson.created_run === runId);
+  return [
+    `Lessons tonight: ${tonight.length}, backed by a test verdict: ${tonight.filter(lesson => lesson.verdict_ref?.kind === 'test').length}`,
+    `Sessions shown lessons at start: ${new Set(of('shown').map(row => row.session_id)).size}`,
+    `Full lesson reads: ${of('read').length}`,
+    `Judgments: ${judgments.length} (helped ${having('effect', 'helped')}, harmful ${having('effect', 'harmful')}; basis shown ${having('basis', 'shown')}, read ${having('basis', 'read')})`,
+    `Cloud recall: sent ${of('first-message-recall').filter(row => row.skipped === undefined).length} / allowance refused ${of('first-message-recall-skipped').length} / timed out ${of('first-message-recall-failed').filter(row => String(row.error).includes('ETIMEDOUT')).length}`,
+  ];
 }
 
 // What waits for the owner: listed lessons with their accept commands, and staged proposals.

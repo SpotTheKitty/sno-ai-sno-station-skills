@@ -16,11 +16,17 @@ export interface CallRecord {
   exit_code: number | null;
   benign_nonzero: boolean;
   error_excerpt: string | null;
+  // The whole command (`target` is cut at 200 characters) and the last 2,000 characters of its result,
+  // kept for success and failure alike: external verdicts and trigger conditions are computed from them.
+  command_text: string | null;
+  result_excerpt: string | null;
 }
 
 const head = (value: unknown): string | null => typeof value === 'string' && value ? value.slice(0, 200) : null;
 const time = (value: unknown): string | null => typeof value === 'string' ? value : typeof value === 'number' ? new Date(value).toISOString() : null;
 const tail = (value: string): string | null => value ? value.slice(-600) : null;
+const excerpt = (value: string): string | null => value ? value.slice(-2000) : null;
+const text = (value: unknown): string | null => typeof value === 'string' && value ? value : null;
 const outputText = (value: unknown): string => Array.isArray(value) ? contentText(value) : typeof value === 'string' ? value : '';
 
 export function readCalls(trace: Trace): CallRecord[] {
@@ -58,7 +64,8 @@ export function readCalls(trace: Trace): CallRecord[] {
           target: head(fields.file_path ?? fields.command ?? fields.url ?? fields.pattern),
           started_at: time(use?.item.record.timestamp), ended_at: time(item.record.timestamp), failed,
           failure_kind: kind, exit_code: exitCode, benign_nonzero: benign,
-          error_excerpt: failed ? tail(result || (typeof structured === 'string' ? structured : '')) : null });
+          error_excerpt: failed ? tail(result || (typeof structured === 'string' ? structured : '')) : null,
+          command_text: text(fields.command), result_excerpt: excerpt(result || (typeof structured === 'string' ? structured : '')) });
       }
     }
     return calls;
@@ -86,7 +93,8 @@ export function readCalls(trace: Trace): CallRecord[] {
         target, started_at: time(record.started_at_ms), ended_at: time(record.completed_at_ms), failed,
         failure_kind: !failed ? null : step.status === 'declined' ? 'denied' : exit === 124 ? 'timeout'
           : exit !== null && exit !== 0 ? 'exit_nonzero' : 'tool_error',
-        exit_code: exit, benign_nonzero: false, error_excerpt: failed ? tail(error) : null });
+        exit_code: exit, benign_nonzero: false, error_excerpt: failed ? tail(error) : null,
+        command_text: text(command), result_excerpt: excerpt(error) });
       continue;
     }
     if (record.type === 'custom_tool_call' && typeof record.call_id === 'string') {
@@ -118,7 +126,8 @@ export function readCalls(trace: Trace): CallRecord[] {
     calls.push({ call_id: direct ? String(record.call_id) : String(waitCell), line_start: script.item.line_number,
       line_end: item.line_number, turn: script.turn, tool: 'exec', target: head(script.input),
       started_at: time(script.item.record.timestamp), ended_at: time(item.record.timestamp), failed: true,
-      failure_kind: kind, exit_code: null, benign_nonzero: false, error_excerpt: tail(output) });
+      failure_kind: kind, exit_code: null, benign_nonzero: false, error_excerpt: tail(output),
+      command_text: null, result_excerpt: excerpt(output) });
   }
   return calls;
 }

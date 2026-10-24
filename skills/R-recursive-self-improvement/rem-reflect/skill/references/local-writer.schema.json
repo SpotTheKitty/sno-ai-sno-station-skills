@@ -39,9 +39,10 @@
           }
         },
         "skill_target": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
-        "reminder_line": { "oneOf": [{ "type": "string" }, { "type": "null" }] }
+        "reminder_line": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "verdict_line": { "type": "integer", "minimum": 1, "description": "the line of the external verdict (from the External verdicts list in the prompt) this lesson rests on: a passed test for from_success, a failed test, check or build near the evidence for from_failure" }
       },
-      "required": ["summary", "class", "situation", "advice", "because", "polarity", "evidence", "skill_target", "reminder_line"],
+      "required": ["summary", "class", "situation", "advice", "because", "polarity", "evidence", "skill_target", "reminder_line", "verdict_line"],
       "additionalProperties": false
     }
   }

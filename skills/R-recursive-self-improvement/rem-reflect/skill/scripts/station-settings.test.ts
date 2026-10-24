@@ -7,12 +7,13 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { run } from './rem-reflect.ts';
 import { stationCell } from './config.ts';
+import { cloudStepGate, localConsent } from './cloud.ts';
 import type { Config } from './config.ts';
 import { appendRows } from './lessons.ts';
 import { git } from './store.ts';
 import {
   tmp, fixtureConfig, fixtureCheckout, makeStore, FixtureBackend, writeStationSettings, stationSettings,
-  writeCodexSession, codexMeta, codexUser, codexAssistant,
+  writeCodexSession, codexMeta, codexUser, codexAssistant, codexFailedTest,
 } from './test-helpers.ts';
 
 const MT = new Date('2026-09-07T00:00:00Z').getTime();
@@ -26,8 +27,9 @@ function useEnv(t: TestContext, vars: Record<string, string>): void {
   }
 }
 function cfg(): Config { return fixtureConfig({ claude_root: tmp('c'), codex_root: tmp('x') }); }
+// The failed `pytest` is the external verdict a session needs before the Local First writer is asked about it.
 function codexTrace(config: Config): void {
-  writeCodexSession(config.codex_root, 'cx', [codexMeta('cx', '/n'), codexUser('do it'), codexAssistant('ok')], MT);
+  writeCodexSession(config.codex_root, 'cx', [codexMeta('cx', '/n'), codexUser('do it'), codexAssistant('ok'), codexFailedTest()], MT);
 }
 function stagingFile(store: string, name: string): string | undefined {
   return readdirSync(join(store, 'staging'), { recursive: true }).map(String).find(path => path.endsWith(name));
@@ -166,7 +168,7 @@ function firstPrompt(t: TestContext, mode: string, consent: string, rows: Record
   const bin = tmp('r4-bin');
   const requests = join(bin, 'requests.jsonl');
   const sno = join(bin, 'sno');
-  writeFileSync(sno, '#!/usr/bin/env node\nconst fs=require("node:fs");\nconst a=process.argv.slice(2).join(" ");\nif(a==="station consent"){console.log(process.env.CONSENT);process.exit(0);}\nfs.appendFileSync(process.env.RECALL_REQUESTS, fs.readFileSync(0,"utf8")+"\\n");\nconsole.log(JSON.stringify({lesson_ids:["L-1"]}));\n');
+  writeFileSync(sno, '#!/usr/bin/env node\nconst fs=require("node:fs");\nconst a=process.argv.slice(2).join(" ");\nif(a==="station consent --json"){console.log(JSON.stringify({consent:process.env.CONSENT}));process.exit(0);}\nfs.appendFileSync(process.env.RECALL_REQUESTS, fs.readFileSync(0,"utf8")+"\\n");\nconsole.log(JSON.stringify({lesson_ids:["L-1"]}));\n');
   chmodSync(sno, 0o755);
   const env = { ...process.env, REM_REFLECT_STORE: store, RECALL_REQUESTS: requests, CONSENT: consent,
     SNO_PROFILE_DIR: profile ?? writeStationSettings(mode, rows), PATH: `${bin}:${process.env.PATH ?? ''}` };
@@ -203,4 +205,16 @@ test('the first-prompt lookup with no settings file sends nothing, records the m
   assert.equal(first.stdout, '');
   assert.equal(missing.sent(), 0);
   assert.match(readFileSync(join(missing.store, 'ledger/usage.jsonl'), 'utf8'), /"skipped":"settings unavailable: .*settings\.json: file missing; run sno setup"/);
+});
+
+test('consent is read from `sno station consent --json`, so the plain output becoming a sentence no longer blocks the lookup', t => {
+  const bin = tmp('consent-bin');
+  // The installed sno (1.1.13) prints a sentence without --json; the JSON form keeps the bare level.
+  writeFileSync(join(bin, 'sno'), '#!/bin/sh\ncase "$*" in\n"station consent") echo "Uploads: full. Sno receives usage counts, the sessions and skills Self Learning reads, and more. Change it with sno station consent off, metadata-only or full.";;\n"station consent --json") echo \'{"consent":"full"}\';;\n*) exit 2;;\nesac\n');
+  chmodSync(join(bin, 'sno'), 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}:${oldPath ?? ''}`;
+  t.after(() => { if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath; });
+  assert.equal(localConsent(), 'full');
+  assert.deepEqual(cloudStepGate('R4'), { send: true });
 });

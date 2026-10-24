@@ -10,7 +10,7 @@ import { readLedger } from './ledger.ts';
 import { readState, writeJson } from './store.ts';
 import type { SpawnRequest } from './backend.ts';
 import { FixtureBackend, fixtureConfig, makeStore, tmp, writeStationSettings, writeCodexSession,
-  codexMeta, codexUser, codexAssistant } from './test-helpers.ts';
+  codexMeta, codexUser, codexAssistant, codexFailedTest } from './test-helpers.ts';
 
 class ReminderWriter extends FixtureBackend {
   override spawn(request: SpawnRequest): { stdout: string } {
@@ -18,12 +18,13 @@ class ReminderWriter extends FixtureBackend {
     assert.ok(header);
     const target = (JSON.parse(header) as { skills_loaded: string[] }).skills_loaded[0];
     const line = Number(/^(\d+): .*No, read the report back/m.exec(request.input)?.[1]);
+    const verdictLine = Number(/^(\d+) test failed /m.exec(request.input)?.[1]);
     return { stdout: JSON.stringify({ lesson: {
       summary: 'Read back the report', class: 'EXECUTION_LAPSE',
       situation: { task_type: 'report', trigger: 'report written', tools: [] },
       advice: 'Read the report back.', because: 'The owner corrected an unchecked report.', polarity: 'from_failure',
       evidence: [{ line_start: line, line_end: line, quote: 'No, read the report back' }],
-      skill_target: target, reminder_line: 'Keep the local reminder.',
+      skill_target: target, reminder_line: 'Keep the local reminder.', verdict_line: verdictLine,
     } }) };
   }
 }
@@ -38,7 +39,7 @@ test('a fallback reminder survives a later cloud proposal and remains adoptable'
   const runId = '20261018-0500';
   for (const id of ['one', 'two', 'three', 'four']) {
     writeCodexSession(config.codex_root, id, [codexMeta(id, '/n'), codexUser('<skill>\n<name>heartbeat</name>\n</skill>'),
-      codexUser('write the report'), codexAssistant('done'), codexUser('No, read the report back')],
+      codexUser('write the report'), codexAssistant('done'), codexFailedTest(), codexUser('No, read the report back')],
       Date.parse('2026-10-18T01:00:00Z'));
   }
   harvest(store, config, readState(store), 'u', now);

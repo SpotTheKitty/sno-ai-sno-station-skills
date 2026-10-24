@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { recall, lessonDetail } from './recall.ts';
+import { recall, lessonDetail, firstMessageRecall } from './recall.ts';
 import { run } from './rem-reflect.ts';
 import { appendRows } from './lessons.ts';
 import { git } from './store.ts';
@@ -300,4 +300,77 @@ test('with nothing to show for this project, recall prints nothing instead of an
   const config = fixtureConfig({ claude_root: tmp('c'), codex_root: tmp('x') });
   const store = seed(config, [lesson('L-elsewhere', { project_id: 'github.com/other/repo', applies_to: 'project:github.com/other/repo' })]);
   assert.deepEqual(recall(store, 'claude-code', { session_id: 'S1', cwd: checkout }, NOW, ARMED).lines, []);
+});
+
+// first-message recall: a used-up allowance pauses the cloud call until the reset the CLI names ---
+test('after the cloud refuses for a used-up allowance, later sessions skip the call until reset_at and resume after it', t => {
+  const checkout = fixtureCheckout();
+  const config = fixtureConfig({ claude_root: tmp('c'), codex_root: tmp('x') });
+  const store = seed(config, [lesson('L-a')]);
+  const bin = tmp('recall-429-bin');
+  const requests = join(bin, 'requests.jsonl');
+  // `sno rem recall --json` answers the way the installed CLI does on HTTP 429 (sno-cli-core cli.rs print_cli_error).
+  writeFileSync(join(bin, 'sno'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2).join(' ');
+if (args === 'station consent --json') { console.log('{"consent":"full"}'); process.exit(0); }
+if (args !== 'rem recall --json') process.exit(2);
+fs.appendFileSync(${JSON.stringify(requests)}, fs.readFileSync(0, 'utf8') + '\\n');
+if (process.env.RECALL_429 === 'reset') { console.log(JSON.stringify({ error: 'allowance_used_up', message: 'Your weekly allowance is used up. Resets Sep 9, 1:00 AM.', reset_at: '2026-09-09T01:00:00Z' })); process.exit(1); }
+if (process.env.RECALL_429 === 'no-reset') { console.log(JSON.stringify({ error: 'allowance_used_up', message: 'used up' })); process.exit(1); }
+console.log(JSON.stringify({ lesson_ids: ['L-a'] }));
+`);
+  chmodSync(join(bin, 'sno'), 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}:${oldPath ?? ''}`;
+  t.after(() => { if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath; delete process.env.RECALL_429; });
+  const sent = () => existsSync(requests) ? readFileSync(requests, 'utf8').trim().split('\n').length : 0;
+  const usage = () => readFileSync(join(store, 'ledger/usage.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  const call = (session: string, at: string) => firstMessageRecall(store, 'claude-code', { session_id: session, cwd: checkout, prompt: 'broken build' }, new Date(at));
+
+  // A 429 without reset_at keeps the old failure row and pauses nothing.
+  process.env.RECALL_429 = 'no-reset';
+  assert.deepEqual(call('s0', '2026-09-08T00:00:00Z'), { code: 0, lines: [] });
+  assert.equal(sent(), 1);
+  assert.equal(usage().filter(row => row.type === 'first-message-recall-skipped').length, 0);
+  assert.match(JSON.stringify(usage().find(row => row.type === 'first-message-recall-failed')), /allowance_used_up/);
+
+  // The first 429 with reset_at is sent, refused, and recorded with the reset.
+  process.env.RECALL_429 = 'reset';
+  assert.deepEqual(call('s1', '2026-09-08T00:10:00Z'), { code: 0, lines: [] });
+  assert.equal(sent(), 2);
+  const first = usage().filter(row => row.session_id === 's1');
+  assert.deepEqual(first.map(row => row.type), ['first-message-recall', 'first-message-recall-skipped']);
+  assert.equal(first[1].until, '2026-09-09T01:00:00Z');
+
+  // Before the reset the next session never spawns the CLI and records the same pause.
+  delete process.env.RECALL_429;
+  assert.deepEqual(call('s2', '2026-09-08T12:00:00Z'), { code: 0, lines: [] });
+  assert.equal(sent(), 2, 'no request left the machine');
+  assert.deepEqual(usage().filter(row => row.session_id === 's2').map(row => [row.type, row.until]),
+    [['first-message-recall-skipped', '2026-09-09T01:00:00Z']]);
+  assert.deepEqual(call('s2', '2026-09-08T12:01:00Z'), { code: 0, lines: [] });
+  assert.equal(usage().filter(row => row.session_id === 's2').length, 1, 'a later prompt in a paused session is not a first prompt again');
+
+  // After the reset the call goes out again and the answer is shown.
+  const resumed = call('s3', '2026-09-09T01:00:01Z');
+  assert.equal(sent(), 3);
+  assert.match(resumed.lines[0], /read the compiler error|advice L-a/);
+  assert.deepEqual(usage().filter(row => row.session_id === 's3').map(row => row.type), ['first-message-recall', 'shown']);
+});
+
+test('a lesson bound to a failed call names what it fires on in its index line', () => {
+  const checkout = fixtureCheckout();
+  const config = fixtureConfig({ claude_root: tmp('c'), codex_root: tmp('x') });
+  const store = seed(config, [
+    lesson('L-on', { trigger_match: { tool: 'Bash', command_id: 'bun test', error_signature: 'Cannot find module ./x', path_glob: null } }),
+    lesson('L-edit', { trigger_match: { tool: 'Edit', command_id: null, error_signature: 'String to replace not found', path_glob: '*.ts' } }),
+    lesson('L-plain', { trigger_match: null }),
+  ]);
+  const index = idx(recall(store, 'claude-code', { session_id: 'S1', cwd: checkout }, NOW, ARMED).lines).sort();
+  assert.deepEqual(index, [
+    'L-edit · general · trigger L-edit [on: *.ts] — advice L-edit',
+    'L-on · general · trigger L-on [on: bun test] — advice L-on',
+    'L-plain · general · trigger L-plain — advice L-plain',
+  ]);
 });

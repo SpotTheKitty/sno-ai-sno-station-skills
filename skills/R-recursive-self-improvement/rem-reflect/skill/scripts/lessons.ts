@@ -4,6 +4,8 @@ import { closeSync, existsSync, fsyncSync, openSync, readFileSync, writeSync } f
 import { dirname, join } from 'node:path';
 import type { Evidence } from './evidence.ts';
 import type { CounterExamples, Scenario } from './pages.ts';
+import type { VerdictRef } from './verdicts.ts';
+import type { TriggerMatch } from './trigger.ts';
 import { privateDirectory } from './store.ts';
 
 export interface LessonInput {
@@ -15,6 +17,7 @@ export interface Lesson extends LessonInput {
   count: number; helped: number; harmful: number; measured: boolean; created_run: string;
   project_id: string; agent_id: string; user_id: string; skill_target: string | null; scenario: Scenario;
   listed?: boolean; judgment_id?: string; verification?: { accepted?: boolean };
+  verdict_ref?: VerdictRef; trigger_match?: TriggerMatch | null;
 }
 export function appendRows(path: string, rows: readonly unknown[]): void {
   if (!rows.length) return;

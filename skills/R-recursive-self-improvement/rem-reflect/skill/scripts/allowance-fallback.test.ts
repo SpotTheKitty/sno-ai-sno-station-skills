@@ -12,7 +12,7 @@ import { readLedger } from './ledger.ts';
 import { readState, writeJson } from './store.ts';
 import {
   FixtureBackend, fixtureConfig, makeStore, setMtime, tmp, writeStationSettings,
-  writeCodexSession, codexMeta, codexUser, codexAssistant,
+  writeCodexSession, codexMeta, codexUser, codexAssistant, codexFailedTest,
 } from './test-helpers.ts';
 
 function environment(t: TestContext, mode: string): string {
@@ -60,12 +60,13 @@ class Writer extends FixtureBackend {
   override spawn(request: SpawnRequest): { stdout: string } {
     if (request.input.includes('previous_versions:')) return super.spawn(request);
     const line = Number(/^(\d+): .*No, read the report back/m.exec(request.input)?.[1]);
+    const verdictLine = Number(/^(\d+) test failed /m.exec(request.input)?.[1]);
     return { stdout: JSON.stringify({ lesson: {
       summary: 'Read back the report', class: 'EXECUTION_LAPSE',
       situation: { task_type: 'report', trigger: 'report written', tools: [] },
       advice: 'Read the report back before declaring success.', because: 'The owner corrected an unchecked report.',
       polarity: 'from_failure', evidence: [{ line_start: line, line_end: line, quote: 'No, read the report back' }],
-      skill_target: null, reminder_line: null,
+      skill_target: null, reminder_line: null, verdict_line: verdictLine,
     } }) };
   }
 }
@@ -82,7 +83,7 @@ for (const mode of ['agent-native', 'rem-enhanced']) {
     const store = makeStore(config);
     const sessionPaths = ['first', 'second'].map(id =>
       writeCodexSession(config.codex_root, id, [codexMeta(id, '/n'),
-        codexUser('write the report'), codexAssistant('done'), codexUser('No, read the report back')],
+        codexUser('write the report'), codexAssistant('done'), codexFailedTest(), codexUser('No, read the report back')],
       Date.parse('2026-10-18T01:00:00Z')));
     writeCodexSession(config.codex_root, 'quiet', [codexMeta('quiet', '/n'), codexAssistant('No correction or failed call.')],
       Date.parse('2026-10-18T01:00:00Z'));
@@ -115,7 +116,7 @@ for (const mode of ['agent-native', 'rem-enhanced']) {
 
     delete process.env.SNO_IDENTITY_PATH;
     writeCodexSession(config.codex_root, 'third', [codexMeta('third', '/n'), codexUser('write the report'),
-      codexAssistant('done'), codexUser('No, read the report back')], Date.parse('2026-10-19T01:00:00Z'));
+      codexAssistant('done'), codexFailedTest(), codexUser('No, read the report back')], Date.parse('2026-10-19T01:00:00Z'));
     const second = run(store, new Date('2026-10-19T12:00:00Z'), 'u', new Writer());
     assert.equal(second.code, 0, second.lines.join('\n'));
     const ledger = readFileSync(join(store, 'ledger', 'local-writer.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
@@ -171,7 +172,7 @@ test('an allowance refusal fails the night when every local session CLI is unava
   writeJson(join(profile, 'explicit-identity.json'), {});
   const config = fixtureConfig({ time_zone: 'America/Los_Angeles' });
   const store = makeStore(config);
-  writeCodexSession(config.codex_root, 'unavailable', [codexMeta('unavailable', '/n'), codexUser('check the report')],
+  writeCodexSession(config.codex_root, 'unavailable', [codexMeta('unavailable', '/n'), codexUser('check the report'), codexFailedTest()],
     Date.parse('2026-10-18T01:00:00Z'));
   const result = run(store, new Date('2026-10-18T12:00:00Z'), 'u', {
     spawn(request) {
@@ -192,7 +193,7 @@ test('a saved request that cannot be edited keeps its bytes and logs the risk wi
   const config = fixtureConfig({ time_zone: 'America/Los_Angeles' });
   const store = makeStore(config);
   writeCodexSession(config.codex_root, 'kept-lesson', [codexMeta('kept-lesson', '/n'), codexUser('write the report'),
-    codexAssistant('done'), codexUser('No, read the report back')], Date.parse('2026-10-18T01:00:00Z'));
+    codexAssistant('done'), codexFailedTest(), codexUser('No, read the report back')], Date.parse('2026-10-18T01:00:00Z'));
   const broken = join(store, 'staging', '20261018-0600', 'cloud-request.json');
   writeJson(broken, {});
   writeFileSync(broken, '{unfinished request');
@@ -212,7 +213,7 @@ test('Local First learns a grown session version without asking an unchanged ver
   const config = fixtureConfig({ time_zone: 'America/Los_Angeles' });
   const store = makeStore(config);
   const path = writeCodexSession(config.codex_root, 'growing', [codexMeta('growing', '/n'),
-    codexUser('write the report'), codexAssistant('done'), codexUser('No, read the report back')],
+    codexUser('write the report'), codexAssistant('done'), codexFailedTest(), codexUser('No, read the report back')],
     Date.parse('2026-10-18T01:00:00Z'));
   const first = run(store, new Date('2026-10-18T12:00:00Z'), 'u', new Writer());
   assert.equal(first.code, 0, first.lines.join('\n'));
@@ -220,7 +221,7 @@ test('Local First learns a grown session version without asking an unchanged ver
   const unchanged = run(store, new Date('2026-10-19T12:00:00Z'), 'u', new Writer());
   assert.equal(unchanged.code, 0, unchanged.lines.join('\n'));
   assert.equal(readLessons(store).length, 1);
-  appendFileSync(path, JSON.stringify(codexUser('No, read the report back again')) + '\n' + JSON.stringify(codexAssistant('checked')) + '\n');
+  appendFileSync(path, [codexFailedTest(), codexUser('No, read the report back again'), codexAssistant('checked')].map(row => JSON.stringify(row) + '\n').join(''));
   setMtime(path, Date.parse('2026-10-20T01:00:00Z'));
   const grown = run(store, new Date('2026-10-20T12:00:00Z'), 'u', new Writer());
   assert.equal(grown.code, 0, grown.lines.join('\n'));

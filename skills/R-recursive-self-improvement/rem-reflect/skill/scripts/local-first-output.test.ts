@@ -14,7 +14,7 @@ import { readLedger } from './ledger.ts';
 import { readPages } from './pages.ts';
 import {
   tmp, fixtureConfig, fixtureCheckout, makeStore, writeStationSettings,
-  writeCodexSession, codexMeta, codexUser, codexAssistant,
+  writeCodexSession, codexMeta, codexUser, codexAssistant, codexFailedTest,
 } from './test-helpers.ts';
 import type { Config } from './config.ts';
 
@@ -37,6 +37,7 @@ function correctedSession(config: Config, mtime: number = MT): void {
     codexUser('<skill>\n<name>heartbeat</name>\n</skill>'),
     codexUser('write the weekly report'),
     codexAssistant('Report written, done.'),
+    codexFailedTest(),
     codexUser(`No, ${CORRECTION}`),
     codexAssistant('You are right, I checked it now.'),
   ], mtime);
@@ -55,6 +56,7 @@ class WriterCli implements Backend {
 }
 function lessonFor(prompt: string, quote: string = CORRECTION): unknown {
   const line = Number(new RegExp(`^(\\d+): .*${quote}`, 'm').exec(prompt)?.[1]);
+  const verdictLine = Number(/^(\d+) test failed /m.exec(prompt)?.[1]);
   const header = JSON.parse(/^(\{"trace_id".*)$/m.exec(prompt)![1]) as { skills_loaded: string[] };
   return { lesson: {
     summary: 'The report was declared done without reading the account back', class: 'EXECUTION_LAPSE',
@@ -62,7 +64,7 @@ function lessonFor(prompt: string, quote: string = CORRECTION): unknown {
     advice: 'Read the account back after writing a report before saying it is done.',
     because: 'The owner had to ask for the read-back after the agent reported success.', polarity: 'from_failure',
     evidence: [{ line_start: line, line_end: line, quote }], skill_target: header.skills_loaded[0] ?? null,
-    reminder_line: 'Read the account back after writing, before reporting the work done.',
+    reminder_line: 'Read the account back after writing, before reporting the work done.', verdict_line: verdictLine,
   } };
 }
 function cliRun(store: string, ...args: string[]) {
@@ -90,6 +92,7 @@ test('a Local First night writes a lesson and a skill reminder the owner can rea
   assert.equal(readLessons(store).length, 1);
   assert.deepEqual([lesson.status, lesson.listed, lesson.advice], ['candidate', true, 'Read the account back after writing a report before saying it is done.']);
   assert.equal(lesson.verification, undefined, 'a local lesson carries no cloud verification');
+  assert.deepEqual(lesson.verdict_ref, { line: lesson.evidence[0].line_start - 1, kind: 'test', passed: false }, 'the local lesson cites the failed test the session ran');
   assert.deepEqual(readPages(store).map(page => page.page_id), [lesson.page_id]);
   const proposal = readLedger(store).find(row => row.type === 'proposal');
   assert.deepEqual([proposal?.verdict, proposal?.backend, proposal?.region], ['pending', 'local', 'reminders']);
@@ -126,7 +129,7 @@ test('a Local First night writes a lesson and a skill reminder the owner can rea
   // And the other verdict works on a second lesson from another night.
   const second = new WriterCli(prompt => lessonFor(prompt, 'write the weekly report'));
   writeCodexSession(config.codex_root, 'cx2', [codexMeta('cx2', '/n'), codexUser('write the weekly report'),
-    codexAssistant('done'), codexUser('write the weekly report again, the first one was empty')], MT + 3_600_000);
+    codexAssistant('done'), codexFailedTest(), codexUser('write the weekly report again, the first one was empty')], MT + 3_600_000);
   assert.equal(run(store, NEXT, 'u', second).code, 0);
   const fresh = readLessons(store).find(row => row.status === 'candidate');
   assert.ok(fresh, 'the second night wrote a second lesson');
@@ -206,13 +209,14 @@ fs.appendFileSync(${JSON.stringify(calls)}, process.argv.slice(2).join(' ') + '\
 const quote = ${JSON.stringify(CORRECTION)};
 const line = Number(new RegExp('^(\\\\d+): .*' + quote, 'm').exec(prompt)[1]);
 const header = JSON.parse(/^(\\{"trace_id".*)$/m.exec(prompt)[1]);
+const verdictLine = Number(/^(\\d+) test failed /m.exec(prompt)[1]);
 process.stdout.write(JSON.stringify({ lesson: {
   summary: 'The report was declared done without reading the account back', class: 'EXECUTION_LAPSE',
   situation: { task_type: 'write a report', trigger: 'a report was written to an account and declared done', tools: [] },
   advice: 'Read the account back after writing a report before saying it is done.',
   because: 'The owner had to ask for the read-back after the agent reported success.', polarity: 'from_failure',
   evidence: [{ line_start: line, line_end: line, quote }], skill_target: header.skills_loaded[0] ?? null,
-  reminder_line: 'Read the account back after writing, before reporting the work done.' } }));
+  reminder_line: 'Read the account back after writing, before reporting the work done.', verdict_line: verdictLine } }));
 `, { mode: 0o755 });
   const ran = spawnSync(process.execPath, [CLI, 'run', '--now', NIGHT.toISOString()], { encoding: 'utf8',
     env: { ...process.env, REM_REFLECT_STORE: store, SNO_PROFILE_DIR: profile, PATH: `${bin}:${process.env.PATH}` } });
@@ -248,13 +252,14 @@ test('a public build without a private prompt gets the binary-served instruction
     process.env.SNO_PROFILE_DIR = writeStationSettings('local-first');
     const config = fixtureConfig({ claude_root: tmp('c'), codex_root: tmp('x') });
     const store = makeStore(config);
-    writeCodexSession(config.codex_root, 'cx', [codexMeta('cx', '/n'), codexUser('write the report'), codexAssistant('done'), codexUser('No, check it first')], ${MT});
+    writeCodexSession(config.codex_root, 'cx', [codexMeta('cx', '/n'), codexUser('write the report'), codexAssistant('done'), ${JSON.stringify(codexFailedTest())}, codexUser('No, check it first')], ${MT});
     let asked = 0;
     const result = run(store, new Date('${NIGHT.toISOString()}'), 'u', { spawn({input}) {
       asked++;
       const quote = 'No, check it first';
       const line = Number(new RegExp('^(\\\\d+): .*' + quote, 'm').exec(input)[1]);
-      return {stdout: JSON.stringify({lesson:{summary:'Check the written report', class:'EXECUTION_LAPSE', situation:{task_type:'report',trigger:'a completed report',tools:[]}, advice:'Check the report before declaring it done.', because:'The owner asked for verification.', polarity:'from_failure', evidence:[{line_start:line,line_end:line,quote}],skill_target:null,reminder_line:null}})};
+      const verdictLine = Number(/^(\\d+) test failed /m.exec(input)[1]);
+      return {stdout: JSON.stringify({lesson:{summary:'Check the written report', class:'EXECUTION_LAPSE', situation:{task_type:'report',trigger:'a completed report',tools:[]}, advice:'Check the report before declaring it done.', because:'The owner asked for verification.', polarity:'from_failure', evidence:[{line_start:line,line_end:line,quote}],skill_target:null,reminder_line:null,verdict_line:verdictLine}})};
     } });
     console.log(JSON.stringify({ code: result.code, asked, lessons: existsSync(join(store, 'wiki/lessons.jsonl')),
       log: readFileSync(join(store, 'staging', '20260908-0000', 'run.log'), 'utf8'),

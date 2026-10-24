@@ -9,6 +9,7 @@ import { appendLedger } from './ledger.ts';
 import type { Trace, StoredRecord } from './harvest.ts';
 import { renderTrace, loadRenderBudgets } from './render.ts';
 import { fixtureConfig, makeStore, tmp, writeInstalledSkill } from './test-helpers.ts';
+import { fileURLToPath } from 'node:url';
 
 function trace(session: string): Trace {
   const records: StoredRecord[] = [2, 3, 4, 5, 6].map((line, index) => ({
@@ -59,6 +60,7 @@ test('cloud batch sends every retained chunk, complete installed skill bodies, a
   assert.match(byPath.get(join(first, 'SKILL.md'))?.skill_md ?? '', /FIRST-BODY-a{1200}/);
   assert.match(byPath.get(join(second, 'SKILL.md'))?.skill_md ?? '', /SECOND-BODY-b{1300}/);
   assert.equal(byPath.get(join(first, 'SKILL.md'))?.skill_md, readFileSync(join(first, 'SKILL.md'), 'utf8'));
+  assert.deepEqual(batch.halves[0].sessions.map(row => row.external_verdicts), [[], []], 'a session without calls uploads no verdicts');
   assert.deepEqual(batch.usage_reads, [{ session_id: 'kept-a', lesson_id: 'L-used' }]);
   assert.deepEqual(batch.usage_shown, [{ session_id: 'kept-a', lesson_ids: ['L-a', 'L-b', 'L-c'] }]);
   assert.equal('history' in batch, false);
@@ -164,4 +166,17 @@ test('an answered batch keeps only what later nights read, so the store does not
   assert.doesNotMatch(saved, /secret session text/);
   assert.deepEqual(JSON.parse(saved), { schema_version: 1, run_id: '20260921-0100', catalogue,
     halves: [{ harness: 'codex', sessions: [{ session_id: 's1', version: 2 }] }] });
+});
+
+test('the upload carries the code-computed verdicts of a real session beside its calls', () => {
+  const config = fixtureConfig();
+  const store = makeStore(config);
+  const fixtures = JSON.parse(readFileSync(fileURLToPath(new URL('./selftest/fixtures/verdict-traces.json', import.meta.url)), 'utf8')) as Record<string, Trace>;
+  const real = fixtures.claude_vitest;
+  const labels = new Map([[`${real.user_id}/claude-code/${real.trace_id}`, { decision: 'keep' as const, outcome: 'success' as const, reason: 'tests pass',
+    evidence: [], key_ranges: [], labeled_by: 'claude', model: 'local-model' }]]);
+  const session = buildCloudBatch(store, config, '20261022-0100', [real], labels, false).halves[0].sessions[0];
+  assert.deepEqual(session.external_verdicts.map(item => [item.line, item.kind, item.passed]), [[184, 'test', false], [202, 'test', true]]);
+  assert.match(session.external_verdicts[1].command, /npx vitest run/);
+  assert.equal(session.calls.length, 2);
 });

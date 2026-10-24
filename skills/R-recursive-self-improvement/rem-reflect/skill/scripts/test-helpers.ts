@@ -30,7 +30,7 @@ if (!process.env.REM_SELFTEST) {
     '#!/usr/bin/env node',
     "const args = process.argv.slice(2).join(' ');",
     "if (args.startsWith('observe append ')) process.exit(0);",
-    "if (args === 'station consent') { console.log(process.env.REM_TEST_CONSENT || 'full'); process.exit(0); }",
+    "if (args === 'station consent --json') { console.log(JSON.stringify({ consent: process.env.REM_TEST_CONSENT || 'full' })); process.exit(0); }",
     "if (args === 'skills rem-reflect-local-writer') { const binary = process.env.REM_TEST_SNO_CLI; if (!binary) { process.stdout.write('Read one finished coding-agent session and decide whether it teaches one lesson worth keeping.\\n'); process.exit(0); } const result = require('node:child_process').spawnSync(binary, process.argv.slice(2), {encoding:'utf8'}); process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || ''); process.exit(result.status === null ? 1 : result.status); }",
     "if (args === 'heartbeat' || args.startsWith('heartbeat ')) { const binary = process.env.REM_TEST_SNO_CLI || require('node:path').join(require('node:os').homedir(), '.local/bin/sno'); const result = require('node:child_process').spawnSync(binary, process.argv.slice(2), {encoding:'utf8'}); if (result.error) { console.error(String(result.error.message)); process.exit(1); } process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || ''); process.exit(result.status === null ? 1 : result.status); }",
     "if (args !== 'rem judge --json') { console.error('unexpected sno command: ' + args); process.exit(2); }",
@@ -184,6 +184,12 @@ export function codexUser(text: string): ClaudeRecord {
 }
 export function codexAssistant(text: string): ClaudeRecord {
   return { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] } };
+}
+// A `pytest` the session ran and failed before the owner corrected it: the external verdict a local lesson must cite.
+export function codexFailedTest(): ClaudeRecord {
+  return { type: 'event_msg', payload: { type: 'item_completed', turn_id: 'turn-1', started_at_ms: 1788984000000, completed_at_ms: 1788984001000,
+    item: { type: 'CommandExecution', id: 'exec-1', command: ['/usr/bin/zsh', '-lc', 'cd /n && python3 -m pytest -q tests/report'], parsed_cmd: [{ type: 'unknown', cmd: 'cd /n && python3 -m pytest -q tests/report' }],
+      status: 'failed', exit_code: 1, aggregated_output: 'FAILED tests/report/test_account.py::test_read_back - AssertionError\n1 failed, 2 passed in 0.41s\n' } } };
 }
 
 export { setMtime };

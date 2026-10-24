@@ -90,7 +90,10 @@ export function recall(store: string, agent: Harness, input: RecallInput, now: D
   const revision = headRevision(store);
   const lessons = lessonsFrom(readHead(store, reflectionFiles.lessons, revision) ?? '');
   const scoped = lessons.filter(lesson => recallable(lesson, project)).sort(rank).slice(0, 10);
-  const index = scoped.map(lesson => message('recallIndexLine', { id: lesson.lesson_id, headline: lesson.situation.trigger,
+  // A lesson bound to a failed call names what it fires on, so the agent can tell it apart from the general list.
+  const on = (lesson: Lesson): string => lesson.trigger_match
+    ? ` [on: ${lesson.trigger_match.command_id ?? lesson.trigger_match.path_glob ?? lesson.trigger_match.tool}]` : '';
+  const index = scoped.map(lesson => message('recallIndexLine', { id: lesson.lesson_id, headline: `${lesson.situation.trigger}${on(lesson)}`,
     advice: lesson.advice, scope: lesson.applies_to }));
   const prefix: string[] = [];
   if (!timer && !armed(heartbeat)) {
@@ -116,7 +119,8 @@ export function firstMessageRecall(store: string, agent: Harness, input: RecallI
   if (!input.session_id || !input.cwd || !input.prompt || !existsSync(store)) return { code: 0, lines: [] };
   const rows = ledgerFrom(existsSync(join(store, reflectionFiles.usage))
     ? readFileSync(join(store, reflectionFiles.usage), 'utf8') : '');
-  if (rows.some(row => row.type === 'first-message-recall' && row.session_id === input.session_id)) return { code: 0, lines: [] };
+  if (rows.some(row => ['first-message-recall', 'first-message-recall-skipped'].includes(String(row.type))
+    && row.session_id === input.session_id)) return { code: 0, lines: [] };
   const settingsLog: string[] = [];
   const settings = loadLocalSettings(store, settingsLog);
   const config = loadConfig(store);
@@ -126,6 +130,12 @@ export function firstMessageRecall(store: string, agent: Harness, input: RecallI
   let gate: ReturnType<typeof cloudStepGate>;
   try { gate = cloudStepGate('R4'); }
   catch (error) { gate = { send: false, reason: error instanceof Error ? error.message : String(error) }; }
+  // After the cloud refused for a used-up allowance, no session calls it again before the reset it named.
+  const paused = rows.filter(row => row.type === 'first-message-recall-skipped').pop();
+  if (gate.send && typeof paused?.until === 'string' && now.getTime() < Date.parse(paused.until)) {
+    appendUsage(store, { type: 'first-message-recall-skipped', session_id: input.session_id, until: paused.until, time: now.toISOString() });
+    return { code: 0, lines: [] };
+  }
   appendUsage(store, { type: 'first-message-recall', session_id: input.session_id, agent_id: agent,
     project_id: project, time: now.toISOString(), settings: settingsLog[0], call: 'R4',
     ...(gate.send ? {} : { skipped: gate.reason }) });
@@ -135,11 +145,18 @@ export function firstMessageRecall(store: string, agent: Harness, input: RecallI
     .filter(lesson => recallable(lesson, project));
   const request = { project_id: project, message: input.prompt,
     lessons: lessons.map(lesson => ({ lesson_id: lesson.lesson_id, situation: lesson.situation, advice: lesson.advice })) };
-  const result = spawnSync('sno', ['rem', 'recall'], { input: JSON.stringify(request), encoding: 'utf8',
+  const result = spawnSync('sno', ['rem', 'recall', '--json'], { input: JSON.stringify(request), encoding: 'utf8',
     timeout: settings.recall_timeout_ms });
   if (result.error || result.status !== 0) {
+    let refusal: unknown;
+    try { refusal = JSON.parse(result.stdout); } catch { /* not the CLI's JSON error: the failure row below keeps the text */ }
+    if (isObject(refusal) && refusal.error === 'allowance_used_up' && typeof refusal.reset_at === 'string'
+      && Number.isFinite(Date.parse(refusal.reset_at))) {
+      appendUsage(store, { type: 'first-message-recall-skipped', session_id: input.session_id, until: refusal.reset_at, time: now.toISOString() });
+      return { code: 0, lines: [] };
+    }
     appendUsage(store, { type: 'first-message-recall-failed', session_id: input.session_id,
-      error: String(result.error ?? result.stderr?.trim() ?? `exit ${result.status}`), time: now.toISOString() });
+      error: String(result.error ?? (result.stdout?.trim() || result.stderr?.trim() || `exit ${result.status}`)), time: now.toISOString() });
     return { code: 0, lines: [] };
   }
   try {

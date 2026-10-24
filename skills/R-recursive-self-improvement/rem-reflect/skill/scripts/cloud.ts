@@ -7,6 +7,8 @@ import { reflectionFiles, isObject, limits, skillRoots, stationCell, readStation
 import { installedCatalogue } from './catalogue.ts';
 import { chunkRendering } from './chunk.ts';
 import { traceKey } from './evidence.ts';
+import type { Evidence } from './evidence.ts';
+import { lessonTrigger } from './trigger.ts';
 import { existingTraces } from './harvest.ts';
 import type { Trace } from './harvest.ts';
 import type { Label } from './labeler.ts';
@@ -19,6 +21,8 @@ import type { Page } from './pages.ts';
 import { proposalSignature, validateProposal } from './proposer.ts';
 import { loadRenderBudgets, renderTrace } from './render.ts';
 import { readCalls } from './calls.ts';
+import { externalVerdicts } from './verdicts.ts';
+import type { Verdict } from './verdicts.ts';
 import { skillImpact } from './report.ts';
 import { lessonProject, observe } from './observe.ts';
 import { atomicWrite, commitStore, writeJson } from './store.ts';
@@ -38,11 +42,12 @@ export class AllowanceUsedUp extends Error {
 }
 
 export function localConsent(): 'off' | 'metadata-only' | 'full' {
-  const result = spawnSync('sno', ['station', 'consent'], { encoding: 'utf8' });
+  const result = spawnSync('sno', ['station', 'consent', '--json'], { encoding: 'utf8' });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(result.stderr?.trim() || `sno station consent exited ${result.status}`);
-  const level = result.stdout?.trim();
-  if (level !== 'off' && level !== 'metadata-only' && level !== 'full') throw new Error(`sno station consent returned ${level}`);
+  const answer: unknown = JSON.parse(result.stdout);
+  const level = isObject(answer) ? answer.consent : undefined;
+  if (level !== 'off' && level !== 'metadata-only' && level !== 'full') throw new Error(`sno station consent returned ${result.stdout.trim()}`);
   return level;
 }
 
@@ -106,12 +111,20 @@ export function buildCloudBatch(store: string, config: Config, runId: string, re
       const label = labels.get(traceKey(trace));
       if (!label || label.decision !== 'keep') throw new Error(`cloud batch: missing keep decision for ${trace.trace_id}`);
       const chunks = chunkRendering(trace.trace_id, renderTrace(trace, loadRenderBudgets()));
+      const calls = readCalls(trace);
+      // Code's verdicts travel beside the calls; a session whose verdicts cannot be computed still uploads, with none.
+      let verdicts: Verdict[] = [];
+      try { verdicts = externalVerdicts(calls); }
+      catch (error) {
+        appendFileSync(join(store, reflectionFiles.staging, runId, reflectionFiles.runLog),
+          `${trace.trace_id}: external verdicts not computed: ${String(error)}; uploaded with none\n`);
+      }
       return {
         trace_id: trace.trace_id, session_id: trace.session_id, project_id: trace.project_id, user_id: trace.user_id,
         version: trace.version, source_mtime_ms: trace.source_mtime, source_line_range: trace.source_line_range,
         skills_loaded: trace.skills_loaded, trivial: trace.trivial, local_outcome: label.outcome, local_reason: label.reason,
         chunks: chunks.map(chunk => ({ id: chunk.id, line_start: chunk.line_range[0], line_end: chunk.line_range[1], text: chunk.text })),
-        calls: readCalls(trace),
+        calls, external_verdicts: verdicts,
       };
     }),
   })).filter(half => half.sessions.length > 0);
@@ -244,6 +257,20 @@ export function applyCloudResponse(store: string, config: Config, response: Clou
   const linked = applyCloudHistoryLinks(store, response.history_links);
   const judged = new Set(readLedger(store).filter(row => row.type === 'lesson-judgment')
     .map(row => `${row.trace_id}::${row.lesson_id}`));
+  const runLog = join(store, reflectionFiles.staging, response.run_id, reflectionFiles.runLog);
+  // The traces tonight's lessons cite, read with their text once; a lesson's trigger condition is computed from them.
+  const citedIds = new Set<string>();
+  for (const half of response.halves) {
+    if (!isObject(half) || !Array.isArray(half.lessons)) continue;
+    for (const item of half.lessons) {
+      const first = isObject(item) && isObject(item.lesson) && Array.isArray(item.lesson.evidence) ? item.lesson.evidence[0] : undefined;
+      if (isObject(first) && typeof first.trace_id === 'string') citedIds.add(first.trace_id);
+    }
+  }
+  let citedTraces = new Map<string, Trace>();
+  try { if (citedIds.size) citedTraces = new Map(existingTraces(store, trace => citedIds.has(trace.trace_id)).map(trace => [trace.trace_id, trace])); }
+  catch (error) { appendFileSync(runLog, `trigger match: traces not read: ${String(error)}; lessons land without one\n`); }
+  const cited = (id: unknown): Trace | undefined => typeof id === 'string' && citedIds.has(id) ? citedTraces.get(id) : undefined;
   for (const half of response.halves) {
     if (!isObject(half) || !['claude-code', 'codex', 'hermes', 'openclaw', 'cursor'].includes(String(half.harness))
       || !Array.isArray(half.pages) || !Array.isArray(half.lessons) || !Array.isArray(half.proposals)
@@ -271,7 +298,10 @@ export function applyCloudResponse(store: string, config: Config, response: Clou
       // A replayed cloud answer never undoes the owner's accept or reject, nor the scope chosen with it.
       if (current?.status === 'accepted' || current?.status === 'rejected') continue;
       if (!current?.judgment_id || current.judgment_id < item.judgment_id) {
-        appendRows(join(store, reflectionFiles.lessons), [{ ...lesson, judgment_id: item.judgment_id }]);
+        // Cloud citations have the store's evidence shape; the trace was validated when it was harvested.
+        const evidence = Array.isArray(lesson.evidence) ? lesson.evidence as Evidence[] : [];
+        const trigger = lessonTrigger(cited(evidence[0]?.trace_id), evidence, line => appendFileSync(runLog, `${lesson.lesson_id}: ${line}\n`));
+        appendRows(join(store, reflectionFiles.lessons), [{ ...lesson, judgment_id: item.judgment_id, trigger_match: trigger }]);
         const project = lessonProject(lesson.applies_to, config);
         if (project === undefined) userLessonsIssued++;
         else projectLessonsIssued.set(project, (projectLessonsIssued.get(project) ?? 0) + 1);
@@ -320,17 +350,19 @@ export function applyCloudResponse(store: string, config: Config, response: Clou
     }
     const traces = new Map(existingTraces(store, () => false).map(trace => [trace.trace_id, trace]));
     const labels = readLabels(store);
-    const reads = new Set(readLessonReads(store, []).map(read => `${read.session_id}::${read.lesson_id}`));
+    // A judgment counts when this session was shown the lesson at start (the index line carries the advice) or read it in full.
+    const seen = new Set(readLessonReads(store, []).map(read => `${read.session_id}::${read.lesson_id}`));
+    for (const row of readLessonsShown(store, [])) for (const id of row.lesson_ids) seen.add(`${row.session_id}::${id}`);
     for (const item of half.read_judgments) {
       if (!isObject(item) || typeof item.trace_id !== 'string' || typeof item.lesson_id !== 'string'
         || !['yes', 'no', 'unclear'].includes(String(item.followed))
         || !['helped', 'harmful', 'neutral'].includes(String(item.effect))) throw new Error('cloud batch: invalid read judgment');
       const trace = traces.get(item.trace_id);
-      if (!trace || !reads.has(`${trace.session_id}::${item.lesson_id}`)) throw new Error('cloud batch: read judgment has no actual lesson read');
+      if (!trace || !seen.has(`${trace.session_id}::${item.lesson_id}`)) throw new Error('cloud batch: read judgment has no lesson shown or read');
       const pair = `${item.trace_id}::${item.lesson_id}`;
       if (judged.has(pair)) continue;
-      appendLedger(store, { type: 'lesson-judgment', trace_id: item.trace_id, lesson_id: item.lesson_id,
-        followed: item.followed, effect: item.effect });
+      appendLedger(store, { type: 'lesson-judgment', run_id: response.run_id, trace_id: item.trace_id, lesson_id: item.lesson_id,
+        followed: item.followed, effect: item.effect, basis: item.basis });
       judged.add(pair);
       const outcome = labels.get(traceKey(trace))?.outcome;
       if (item.followed !== 'yes' || !['helped', 'harmful'].includes(String(item.effect))

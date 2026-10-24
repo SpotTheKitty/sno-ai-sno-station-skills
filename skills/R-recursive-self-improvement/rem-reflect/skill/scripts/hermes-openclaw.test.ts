@@ -26,7 +26,8 @@ function homes() {
 }
 
 // The recorded Hermes exports use epoch seconds, JSON-encoded tool_calls and nullable ended_at.
-function database(home: string, cwd: string): void {
+// `failedTest` adds a failed pytest before the owner's correction: the external verdict a Local First lesson cites.
+function database(home: string, cwd: string, failedTest = false): void {
   mkdirSync(home, { recursive: true });
   execFileSync('python3', ['-c', `
 import json, sqlite3, sys
@@ -40,13 +41,17 @@ for sid, when, prompt in [('hermes-work', base, 'Fix the report'), ('hermes-triv
 calls = [{'id': 'skill-1', 'type': 'function', 'function': {'name': 'skill_view', 'arguments': json.dumps({'name': 'heartbeat'})}}]
 db.execute('INSERT INTO messages(session_id,role,content,tool_calls,timestamp) VALUES (?, ?, ?, ?, ?)', ('hermes-work','assistant','Reading',json.dumps(calls),base + 2))
 db.execute('INSERT INTO messages(session_id,role,content,tool_call_id,tool_name,timestamp) VALUES (?, ?, ?, ?, ?, ?)', ('hermes-work','tool','Body.','skill-1','skill_view',base + 3))
+if sys.argv[4] == '1':
+ tests = [{'id': 'test-1', 'type': 'function', 'function': {'name': 'terminal', 'arguments': json.dumps({'command': 'python3 -m pytest -q tests'})}}]
+ db.execute('INSERT INTO messages(session_id,role,content,tool_calls,timestamp) VALUES (?, ?, ?, ?, ?)', ('hermes-work','assistant','Testing',json.dumps(tests),base + 3.2))
+ db.execute('INSERT INTO messages(session_id,role,content,tool_call_id,tool_name,timestamp) VALUES (?, ?, ?, ?, ?, ?)', ('hermes-work','tool',json.dumps({'output': '1 failed, 2 passed in 0.41s', 'exit_code': 1}),'test-1','terminal',base + 3.4))
 db.execute('INSERT INTO messages(session_id,role,content,timestamp) VALUES (?, ?, ?, ?)', ('hermes-work','user','No, verify it first. sk-secret12345678',base + 4))
 db.commit()
-`, join(home, 'state.db'), cwd, String(MT)], { timeout: 5000 });
+`, join(home, 'state.db'), cwd, String(MT), failedTest ? '1' : '0'], { timeout: 5000 });
 }
 
 // Event fields match export-trajectory's transcript/runtime wire shapes; private identities are omitted.
-function events(cwd: string, trivial = false): string {
+function events(cwd: string, trivial = false, failedTest = false): string {
   const data = [
     { type: 'session.started', source: 'runtime', data: { workspaceDir: cwd } },
     { type: 'user.message', source: 'transcript', data: { message: { role: 'user', content: 'Fix the report' } } },
@@ -54,6 +59,10 @@ function events(cwd: string, trivial = false): string {
     ...(!trivial ? [
       { type: 'tool.call', source: 'runtime', data: { toolCallId: 'skill-2', name: 'skills', arguments: { name: 'heartbeat' } } },
       { type: 'tool.result', source: 'runtime', data: { toolCallId: 'skill-2', name: 'skills', output: 'Exit code 1: missing file', isError: true } },
+      ...(failedTest ? [
+      { type: 'tool.call', source: 'runtime', data: { toolCallId: 'test-2', name: 'exec', arguments: { command: 'python3 -m pytest -q tests' } } },
+      { type: 'tool.result', source: 'runtime', data: { toolCallId: 'test-2', name: 'exec', output: '1 failed, 2 passed in 0.41s', isError: true } },
+      ] : []),
       { type: 'user.message', source: 'transcript', data: { message: { role: 'user', content: 'No, verify it first.' } } },
     ] : []),
     { type: 'session.ended', source: 'runtime', data: { status: 'success' } },
@@ -62,10 +71,10 @@ function events(cwd: string, trivial = false): string {
     seq: i + 1, ts: new Date(MT + i * 1000).toISOString(), provider: 'openai', modelId: 'sno-test-model-a', workspaceDir: cwd, ...row })).join('\n') + '\n';
 }
 
-function openclaw(t: TestContext, cwd: string): string {
+function openclaw(t: TestContext, cwd: string, failedTest = false): string {
   const bin = tmp('openclaw-bin');
   const capture = join(bin, 'commands.jsonl');
-  writeFileSync(join(bin, 'events.jsonl'), events(cwd));
+  writeFileSync(join(bin, 'events.jsonl'), events(cwd, false, failedTest));
   writeFileSync(join(bin, 'trivial.jsonl'), events(cwd, true));
   writeFileSync(join(bin, 'openclaw'), `#!/usr/bin/env node
 const fs = require('node:fs'); const path = require('node:path'); const a = process.argv.slice(2);
@@ -261,16 +270,17 @@ test('Local First writes lessons and accepted reminders to the new agents skill 
   const profile = writeStationSettings('local-first'); const before = process.env.SNO_PROFILE_DIR;
   process.env.SNO_PROFILE_DIR = profile; t.after(() => { process.env.SNO_PROFILE_DIR = before; });
   const config = homes(); const cwd = fixtureCheckout(); const store = makeStore(config);
-  database(config.hermes_home, cwd); openclaw(t, cwd);
+  database(config.hermes_home, cwd, true); openclaw(t, cwd, true);
   writeInstalledSkill(config.hermes_home, 'heartbeat'); writeInstalledSkill(config.openclaw_home, 'heartbeat');
   const result = run(store, NOW, 'u', { spawn({ input, cli }) {
     const line = Number(/^(\d+): .*No, verify it first\./m.exec(input)?.[1]);
+    const verdictLine = Number(/^(\d+) test failed /m.exec(input)?.[1]);
     if (!line) return { stdout: '{"lesson":null}' };
     const target = join(cli === 'hermes' ? config.hermes_home : config.openclaw_home, 'skills/heartbeat');
     return { stdout: JSON.stringify({ lesson: { summary: 'Verify before completion', class: 'EXECUTION_LAPSE',
       situation: { task_type: 'report', trigger: 'report completion', tools: [] }, advice: 'Verify the report.',
       because: 'The owner requested verification.', polarity: 'from_failure', evidence: [{ line_start: line, line_end: line, quote: 'No, verify it first.' }],
-      skill_target: target, reminder_line: 'Verify the report before declaring completion.' } }) };
+      skill_target: target, reminder_line: 'Verify the report before declaring completion.', verdict_line: verdictLine } }) };
   } });
   assert.equal(result.code, 0, result.lines.join('\n'));
   assert.deepEqual(readLessons(store).map(row => row.agent_id).sort(), ['hermes', 'openclaw']);

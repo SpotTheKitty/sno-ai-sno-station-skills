@@ -38,7 +38,7 @@ test('a failed upload preserves a successful day and the next day retries the sa
   writeFileSync(script, `#!/usr/bin/env node
 const fs = require('node:fs');
 const args = process.argv.slice(2).join(' ');
-if (args === 'station consent') { console.log('full'); process.exit(0); }
+if (args === 'station consent --json') { console.log(JSON.stringify({ consent: 'full' })); process.exit(0); }
 if (args !== 'rem judge --json') process.exit(2);
 const input = fs.readFileSync(0, 'utf8');
 if (!fs.existsSync(${JSON.stringify(marker)})) {
@@ -84,7 +84,7 @@ console.log(JSON.stringify({schema_version:1,run_id:batch.run_id,history_acknowl
 test('eligible lessons show their advice and both accept commands, while no eligible lesson shows neither command', t => {
   const bin = tmp('report-bin');
   const sno = join(bin, 'sno');
-  writeFileSync(sno, '#!/bin/sh\n[ "$*" = "station consent" ] && { echo full; exit 0; }\nexit 2\n');
+  writeFileSync(sno, '#!/bin/sh\n[ "$*" = "station consent --json" ] && { echo \'{"consent":"full"}\'; exit 0; }\nexit 2\n');
   chmodSync(sno, 0o755);
   const oldPath = process.env.PATH;
   process.env.PATH = `${bin}:${oldPath ?? ''}`;
@@ -107,4 +107,46 @@ test('eligible lessons show their advice and both accept commands, while no elig
   const empty = makeStore(config);
   const emptyReport = reflect(empty, config, '20260923-0100', new FixtureBackend(), [], new Date('2026-09-23T01:00:00Z')).report.join('\n');
   assert.doesNotMatch(emptyReport, /sno rem-reflect accept/);
+});
+
+test('the report counts the last seven nights of the effect signal chain from the usage and judgment rows', t => {
+  const bin = tmp('signal-bin');
+  const sno = join(bin, 'sno');
+  writeFileSync(sno, '#!/bin/sh\n[ "$*" = "station consent --json" ] && { echo \'{"consent":"full"}\'; exit 0; }\nexit 2\n');
+  chmodSync(sno, 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}:${oldPath ?? ''}`;
+  t.after(() => { if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath; });
+
+  const config = fixtureConfig({ claude_root: tmp('c'), codex_root: tmp('x') });
+  const store = makeStore(config);
+  const now = new Date('2026-10-22T06:00:00Z');
+  const recent = '2026-10-20T10:00:00Z';
+  const old = '2026-10-01T10:00:00Z';
+  appendRows(join(store, reflectionFiles.usage), [
+    { type: 'shown', session_id: 'a', lesson_ids: ['L-1'], time: recent },
+    { type: 'shown', session_id: 'a', lesson_ids: ['L-2'], time: recent },
+    { type: 'shown', session_id: 'b', lesson_ids: ['L-1'], time: recent },
+    { type: 'shown', session_id: 'z', lesson_ids: ['L-1'], time: old },
+    { type: 'read', session_id: 'a', lesson_id: 'L-1', time: recent },
+    { type: 'read', session_id: 'z', lesson_id: 'L-1', time: old },
+    { type: 'first-message-recall', session_id: 'a', call: 'R4', time: recent },
+    { type: 'first-message-recall', session_id: 'b', call: 'R4', time: recent },
+    { type: 'first-message-recall', session_id: 'c', call: 'R4', skipped: 'consent off', time: recent },
+    { type: 'first-message-recall-skipped', session_id: 'b', until: '2026-10-21T00:00:00Z', time: recent },
+    { type: 'first-message-recall-skipped', session_id: 'd', until: '2026-10-21T00:00:00Z', time: recent },
+    { type: 'first-message-recall-failed', session_id: 'e', error: 'Error: spawnSync sno ETIMEDOUT', time: recent },
+    { type: 'first-message-recall-failed', session_id: 'f', error: 'exit 7', time: recent },
+  ]);
+  appendRows(join(store, reflectionFiles.ledger), [
+    { type: 'lesson-judgment', run_id: '20261020-1906', trace_id: 'a.v1', lesson_id: 'L-1', followed: 'yes', effect: 'helped', basis: 'shown' },
+    { type: 'lesson-judgment', run_id: '20261021-1906', trace_id: 'b.v1', lesson_id: 'L-1', followed: 'yes', effect: 'harmful', basis: 'read' },
+    { type: 'lesson-judgment', run_id: '20261021-1906', trace_id: 'b.v1', lesson_id: 'L-2', followed: 'no', effect: 'neutral', basis: 'shown' },
+    { type: 'lesson-judgment', run_id: '20261001-1906', trace_id: 'z.v1', lesson_id: 'L-1', followed: 'yes', effect: 'helped', basis: 'read' },
+  ]);
+  const report = reflect(store, config, '20261022-0600', new FixtureBackend(), [], now).report;
+  assert.ok(report.includes('Sessions shown lessons at start: 2'), report.join('\n'));
+  assert.ok(report.includes('Full lesson reads: 1'), report.join('\n'));
+  assert.ok(report.includes('Judgments: 3 (helped 1, harmful 1; basis shown 2, read 1)'), report.join('\n'));
+  assert.ok(report.includes('Cloud recall: sent 2 / allowance refused 2 / timed out 1'), report.join('\n'));
 });

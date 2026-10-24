@@ -1,0 +1,65 @@
+{
+  "name": "sno-ai",
+  "owner": {
+    "name": "Sno Station Skills contributors"
+  },
+  "metadata": {
+    "description": "Sno Station skills for coding agents."
+  },
+  "plugins": [
+    {
+      "name": "sno-station",
+      "description": "Every Sno Station skill. Most need the Sno Station programs that `sno setup` installs.",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/H-reporting-and-visibility/agentic-time-estimate/skill",
+        "./skills/H-reporting-and-visibility/away-brief/skill",
+        "./skills/H-reporting-and-visibility/catch-report/skill",
+        "./skills/J-peer-review-and-audit/agentic-walkthrough/skill",
+        "./skills/J-peer-review-and-audit/e2e/skills/e2e-environment-preflight",
+        "./skills/J-peer-review-and-audit/e2e/skills/e2e-red-triage",
+        "./skills/J-peer-review-and-audit/first-principles-review/skill",
+        "./skills/J-peer-review-and-audit/less-is-more/skill",
+        "./skills/J-peer-review-and-audit/owner-intent-audit/skill",
+        "./skills/J-peer-review-and-audit/peer-review/skill",
+        "./skills/M-build-and-rollout/medic/skill",
+        "./skills/M-build-and-rollout/sno-cli/skill",
+        "./skills/R-recursive-self-improvement/rem-reflect/skill",
+        "./skills/S-communication-and-handoff/handoff/skill",
+        "./skills/S-communication-and-handoff/heartbeat/skill",
+        "./skills/S-communication-and-handoff/join-talk/skill",
+        "./skills/S-communication-and-handoff/reach/skill",
+        "./skills/S-communication-and-handoff/rotate-agent/skill",
+        "./skills/S-communication-and-handoff/subscription-quota-check/skill",
+        "./skills/T-delegation-and-work-orders/charter/skill",
+        "./skills/T-delegation-and-work-orders/cos/skills/cos",
+        "./skills/T-delegation-and-work-orders/cos/skills/cos-evolve",
+        "./skills/T-delegation-and-work-orders/cos/skills/cos-review",
+        "./skills/T-delegation-and-work-orders/cos/skills/cos-watch",
+        "./skills/T-delegation-and-work-orders/deliver/skill",
+        "./skills/T-delegation-and-work-orders/pl/skills/pl",
+        "./skills/T-delegation-and-work-orders/pl/skills/pl-analyze",
+        "./skills/T-delegation-and-work-orders/pl/skills/pl-audit",
+        "./skills/T-delegation-and-work-orders/pl/skills/pl-dispatch",
+        "./skills/T-delegation-and-work-orders/pl/skills/pl-env",
+        "./skills/T-delegation-and-work-orders/pl/skills/pl-watch"
+      ]
+    },
+    {
+      "name": "sno-station-standalone",
+      "description": "Sno Station skills that run without Sno Station programs and without hooks.",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/J-peer-review-and-audit/agentic-walkthrough/skill",
+        "./skills/J-peer-review-and-audit/e2e/skills/e2e-environment-preflight",
+        "./skills/J-peer-review-and-audit/e2e/skills/e2e-red-triage",
+        "./skills/J-peer-review-and-audit/first-principles-review/skill",
+        "./skills/J-peer-review-and-audit/less-is-more/skill",
+        "./skills/J-peer-review-and-audit/owner-intent-audit/skill",
+        "./skills/T-delegation-and-work-orders/charter/skill"
+      ]
+    }
+  ]
+}
