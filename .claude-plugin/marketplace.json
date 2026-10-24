@@ -23,6 +23,8 @@
         "./skills/J-peer-review-and-audit/less-is-more/skill",
         "./skills/J-peer-review-and-audit/owner-intent-audit/skill",
         "./skills/J-peer-review-and-audit/peer-review/skill",
+        "./skills/M-build-and-rollout/codex-coder/overlay/claude",
+        "./skills/M-build-and-rollout/codex-coder/overlay/codex",
         "./skills/M-build-and-rollout/medic/skill",
         "./skills/M-build-and-rollout/sno-cli/skill",
         "./skills/R-recursive-self-improvement/rem-reflect/skill",

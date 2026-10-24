@@ -4,11 +4,11 @@
   "tier": "shipped",
   "split": {},
   "source": {
-    "commit": "5ef50872a3dfedfccc5c26612e4187e93a6a6d4c",
+    "commit": "3bc88511716cd75c4685fcf33b773bf24dc6ffe8",
     "unit_tree_clean": true
   },
   "selftests_run": 1,
   "contract_sha256": "5022662b4807e817533b5edc1700fb40e87deccaf47d25f82d941baeacf18b62",
-  "payload_sha256": "9241ce8a451f629b8b6b994f888cf96a25f14815956b6641eb94d7685b2ba0ab",
-  "published_at": "2026-10-24T10:16:58Z"
+  "payload_sha256": "958a0791c87080b3329656388b84cdd05610d9cf523d5ddecb3b039fc11a5b31",
+  "published_at": "2026-10-24T10:19:18Z"
 }
