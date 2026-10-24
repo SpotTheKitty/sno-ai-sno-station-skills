@@ -65,7 +65,6 @@ Get the team set up on any workstation with one step, build what the work needs,
 
 - [medic](M-build-and-rollout/medic/) — check that the agent team on this machine can work, in plain lines, and repair nothing
 - [sno-cli](M-build-and-rollout/sno-cli/) — teach an agent to operate the `sno` command line: conventions, task map and recipes; the exact flags come from the installed binary
-- [codex-coder](M-build-and-rollout/codex-coder/) — hand the coding from Claude Code to a direct Codex run, routed by language
 - `e2e-environment-preflight` — check the environment before an end-to-end run (ships inside the [e2e](J-peer-review-and-audit/e2e/) unit)
 
 ## S · Communication & Handoff

@@ -6,11 +6,11 @@
     "e2e-environment-preflight": "M"
   },
   "source": {
-    "commit": "3bc88511716cd75c4685fcf33b773bf24dc6ffe8",
+    "commit": "987e8c7d4780bfb6d89f952d152e9963c75970b3",
     "unit_tree_clean": true
   },
   "selftests_run": 2,
   "contract_sha256": "5022662b4807e817533b5edc1700fb40e87deccaf47d25f82d941baeacf18b62",
-  "payload_sha256": "400f040822f0eef5a759c5399359b3d12eebb050ad17aceb8cdde16aa35631a4",
-  "published_at": "2026-10-24T10:19:18Z"
+  "payload_sha256": "cd2181d88e03567c5076404bdfb8433a420e9ad033ccb701d911c4775b021b6a",
+  "published_at": "2026-10-24T10:26:24Z"
 }

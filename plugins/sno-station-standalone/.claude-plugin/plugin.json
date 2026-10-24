@@ -2,9 +2,19 @@
   "name": "sno-station-standalone",
   "displayName": "Sno Station Skills (standalone)",
   "description": "Seven Sno Station skills for review, intent checks, end-to-end triage and work briefs that run without Sno Station programs or hooks.",
-  "author": {"name": "Sno Station Skills contributors", "url": "https://github.com/sno-ai/sno-station-skills"},
+  "author": {
+    "name": "Sno Station Skills contributors",
+    "url": "https://github.com/sno-ai/sno-station-skills"
+  },
   "homepage": "https://github.com/sno-ai/sno-station-skills",
   "repository": "https://github.com/sno-ai/sno-station-skills",
   "license": "Apache-2.0",
-  "keywords": ["code-review", "simplicity", "intent", "end-to-end", "charter"]
+  "keywords": [
+    "code-review",
+    "simplicity",
+    "intent",
+    "end-to-end",
+    "charter"
+  ],
+  "version": "1.0.202610241026"
 }

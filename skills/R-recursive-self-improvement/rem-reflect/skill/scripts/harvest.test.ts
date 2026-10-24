@@ -14,6 +14,10 @@ import {
   claudeUser, claudeAssistant, codexMeta, codexUser, codexAssistant,
 } from './test-helpers.ts';
 
+// Fake secrets in real shapes, assembled at run time so the source holds no key-shaped literal.
+const FAKE_SK = ['sk', 'ABCDEF0123456789abcdef'].join('-');
+const FAKE_KEY_BLOCK = ['-----BEGIN', 'PRIVATE KEY-----\nMIIEvQIBADAN\n-----END', 'PRIVATE KEY-----'].join(' ');
+
 function rec(line: number, record: Record<string, unknown>): StoredRecord {
   return { line_number: line, source_line: line, record };
 }
@@ -28,9 +32,9 @@ function labelFiles(store: string): string[] {
 // Redaction removes the three secret shapes and counts them.
 test('redact strips sk-, bearer, and a private-key block, counting three', () => {
   const secret = [
-    'key sk-ABCDEF0123456789abcdef',
+    `key ${FAKE_SK}`,
     'Authorization: Bearer abc.def-ghi_jkl',
-    '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADAN\n-----END PRIVATE KEY-----',
+    FAKE_KEY_BLOCK,
   ].join('\n');
   const { text, count } = redact(secret);
   assert.equal(count, 3);
@@ -43,7 +47,7 @@ test('a harvested trace carries redactions:3 and the written file holds none of 
   const config = fixtureConfig({ claude_root: tmp('croot'), codex_root: tmp('xroot') });
   const store = tmp('store');
   const now = new Date('2026-09-02T00:00:00Z');
-  const body = 'sk-ABCDEF0123456789abcdef and Bearer zzz.yyy_www and\n-----BEGIN PRIVATE KEY-----\nMIIEvQIBADAN\n-----END PRIVATE KEY-----';
+  const body = `${FAKE_SK} and Bearer zzz.yyy_www and\n${FAKE_KEY_BLOCK}`;
   writeClaudeSession(config.claude_root, 'slug', 'sess-redact', [
     claudeUser('/nowhere', 'sess-redact', body),
     claudeAssistant('/nowhere', 'sess-redact', [{ type: 'text', text: 'ok' }]),
