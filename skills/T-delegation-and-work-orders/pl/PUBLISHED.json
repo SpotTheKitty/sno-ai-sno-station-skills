@@ -6,11 +6,11 @@
     "pl-analyze": "R"
   },
   "source": {
-    "commit": "8b2dd898ed10ef9886fe592adc2bb2692f416cfd",
+    "commit": "687972dd07557f2d7dc6669b36f72f776a28731f",
     "unit_tree_clean": true
   },
   "selftests_run": 6,
   "contract_sha256": "5022662b4807e817533b5edc1700fb40e87deccaf47d25f82d941baeacf18b62",
   "payload_sha256": "80d6eb66c98f08d7f9083749894f9f7c954664acd2b55f2d78bc38691c05be2e",
-  "published_at": "2026-10-24T10:28:53Z"
+  "published_at": "2026-10-24T10:31:32Z"
 }
