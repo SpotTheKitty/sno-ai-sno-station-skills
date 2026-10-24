@@ -1,8 +1,24 @@
 # Sno Station Skills — The working habits of a real team, installed into your AI agents.
 
+![Sno Station — Agents, assemble. Two heads are better than one, and smarter by morning.](https://raw.githubusercontent.com/sno-ai/sno-station/main/docs/images/hero-banner.png)
+
+[![license Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-97ca00.svg?labelColor=3b3b3b)](LICENSE)
+![31 skills in 22 units](https://img.shields.io/badge/skills-31%20in%2022%20units-2dd4bf.svg?labelColor=3b3b3b)
+![self-tested before every release](https://img.shields.io/badge/every%20release-self--tested-3b82f6.svg?labelColor=3b3b3b)
+![agents Claude Code, Codex](https://img.shields.io/badge/agents-Claude%20Code%20%C2%B7%20Codex-f0a04b.svg?labelColor=3b3b3b)
+
 ## Install
 
-Tell your AI agent: **`install sno.ai from GitHub`**.
+### All skills with Sno Station
+
+Copy this prompt into your agent's chat:
+
+```text
+Install sno.ai from GitHub.
+```
+
+This installs Sno Station and sets up all 31 skills, plus the programs they call,
+for the supported agents it finds on your machine.
 
 Or paste this command into your terminal:
 
@@ -10,27 +26,39 @@ Or paste this command into your terminal:
 sh -c 'sno_installer_body=$(curl -fsSL https://sno.ai/install) && printf "%s\n" "$sno_installer_body" | sh'
 ```
 
-This installs Sno Station and sets up all 31 skills, plus the programs they call,
-for the supported agents it finds on your machine. You do not need to install each skill separately.
-
 **Already have Sno Station?** Run `sno setup` to install the skills into your agents.
 Run it again if you add another agent later.
 
-Supported agents: Claude Code, Codex, OpenClaw and Hermes Agent. Each skill declares what it needs
-from the agent. Setup uses that declaration to install it fully, install it in a reduced form,
-or skip it when the agent cannot run it.
+### Install one skill
+
+Use the copy button on either prompt below, then paste it into your agent's chat.
+Your agent finds and installs the skill; you do not need to download or copy files yourself.
+
+**`peer-review`** checks code, plans and documents with a reviewer from another model vendor.
+It needs Sno Station programs and a logged-in reviewer. The prompt checks those dependencies first.
+
+```text
+Install only the peer-review skill from https://github.com/sno-ai/sno-station-skills
+for this project, including its scripts and references.
+Check its dependencies and tell me what is missing before installing anything else.
+```
+
+**`less-is-more`** helps your agent write less code and remove unnecessary complexity.
+It can run without Sno Station.
+
+```text
+Install only the less-is-more skill from https://github.com/sno-ai/sno-station-skills
+for this project, including its scripts and references.
+```
+
+Supported agents for Sno Station: Claude Code, Codex, OpenClaw and Hermes Agent. Each skill declares
+what it needs from the agent. Setup uses that declaration to install it fully, install it in a reduced
+form, or skip it when the agent cannot run it.
 
 Updates come by themselves: `sno` updates itself when it finds a newer release. The full
 command list is in [Sno Station's command reference](https://github.com/sno-ai/sno-station/blob/main/docs/sno-commands.md).
 
 [Install](#install) · [What changes for you](#what-changes-for-you) · [Why these skills](#why-these-skills) · [The pain, and what fixes it](#the-pain-and-what-fixes-it) · [Stories from our own machine](#i-went-to-bed-it-changed-shifts) · [The skills](#the-skills) · [Built to be trusted](#built-to-be-trusted) · [For skill authors](#for-skill-authors) · [License](#license)
-
-![Sno Station — Agents, assemble. Two heads are better than one, and smarter by morning.](https://raw.githubusercontent.com/sno-ai/sno-station/main/docs/images/hero-banner.png)
-
-[![license Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-97ca00.svg?labelColor=3b3b3b)](LICENSE)
-![31 skills in 22 units](https://img.shields.io/badge/skills-31%20in%2022%20units-2dd4bf.svg?labelColor=3b3b3b)
-![self-tested before every release](https://img.shields.io/badge/every%20release-self--tested-3b82f6.svg?labelColor=3b3b3b)
-![agents Claude Code, Codex](https://img.shields.io/badge/agents-Claude%20Code%20%C2%B7%20Codex-f0a04b.svg?labelColor=3b3b3b)
 
 ## What changes for you
 
