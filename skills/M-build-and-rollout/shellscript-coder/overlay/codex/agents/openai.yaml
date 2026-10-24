@@ -1,0 +1,4 @@
+interface:
+  display_name: "Shell Script Coder"
+  short_description: "Write reliable, observable production shell scripts"
+  default_prompt: "Use $shellscript-coder to implement a reliable Bash script with clear logs, actionable errors, and machine-readable output."

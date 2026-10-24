@@ -1,0 +1,4 @@
+interface:
+  display_name: "Python Coder"
+  short_description: "Production Python with precise verified changes"
+  default_prompt: "Use $python-coder to implement this Python change with repository-grounded context, precise typing, and focused verification."

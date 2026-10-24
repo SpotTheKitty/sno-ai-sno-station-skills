@@ -3,7 +3,7 @@
 ![Sno Station — Agents, assemble. Two heads are better than one, and smarter by morning.](https://raw.githubusercontent.com/sno-ai/sno-station/main/docs/images/hero-banner.png)
 
 [![license Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-97ca00.svg?labelColor=3b3b3b)](LICENSE)
-![32 skills in 23 units](https://img.shields.io/badge/skills-32%20in%2023%20units-2dd4bf.svg?labelColor=3b3b3b)
+![36 skills in 27 units](https://img.shields.io/badge/skills-36%20in%2027%20units-2dd4bf.svg?labelColor=3b3b3b)
 ![self-tested before every release](https://img.shields.io/badge/every%20release-self--tested-3b82f6.svg?labelColor=3b3b3b)
 ![agents Claude Code, Codex](https://img.shields.io/badge/agents-Claude%20Code%20%C2%B7%20Codex-f0a04b.svg?labelColor=3b3b3b)
 
@@ -17,7 +17,7 @@ Copy this prompt into your agent's chat:
 Install sno.ai from GitHub.
 ```
 
-This installs Sno Station and sets up all 32 skills, plus the programs they call,
+This installs Sno Station and sets up all 36 skills, plus the programs they call,
 for the supported agents it finds on your machine.
 
 Or paste this command into your terminal:
@@ -74,7 +74,7 @@ codex plugin marketplace add sno-ai/sno-station-skills
 codex plugin add sno-station@sno-ai
 ```
 
-`sno-station` holds all 32 skills; most of them call Sno Station programs, so install Sno Station too.
+`sno-station` holds all 36 skills; most of them call Sno Station programs, so install Sno Station too.
 For only the 7 skills that run without Sno Station, install `sno-station-standalone@sno-ai` instead.
 
 [Install](#install) · [What changes for you](#what-changes-for-you) · [Why these skills](#why-these-skills) · [The pain, and what fixes it](#the-pain-and-what-fixes-it) · [Stories from our own machine](#i-went-to-bed-it-changed-shifts) · [The skills](#the-skills) · [Built to be trusted](#built-to-be-trusted) · [For skill authors](#for-skill-authors) · [License](#license)
@@ -195,7 +195,7 @@ in all three had dropped to zero.
 
 ## The skills
 
-32 skills, shipped as 23 units, filed under six things a team has to be able to do. A unit is
+36 skills, shipped as 27 units, filed under six things a team has to be able to do. A unit is
 one skill or a small family that installs together. The full index with links is
 [skills/README.md](skills/README.md).
 
@@ -296,7 +296,8 @@ one skill or a small family that installs together. The full index with links is
 *Get the team set up on any workstation with one step, build what the work needs, then roll it out to every machine.*
 
 Setup itself is the `sno setup` command, not a skill. Two of these keep the machine healthy and
-make the `sno` command easy for your agents to drive; the third hands the coding to Codex.
+make the `sno` command easy for your agents to drive; the rest write the code: one hands it to
+Codex, four write it in Shell, TypeScript, Python or Rust.
 
 #### [medic](skills/M-build-and-rollout/medic/) — is my agent team healthy? One line per answer.
 
@@ -332,6 +333,19 @@ not start.
 
 *Use it when:* your Claude quota runs out halfway through the coding, or you want Codex to
 write what Claude planned. On the Claude Code side it needs Sno Station's `heartbeat`.
+
+#### [shellscript-coder](skills/M-build-and-rollout/shellscript-coder/), [ts-coder](skills/M-build-and-rollout/ts-coder/), [python-coder](skills/M-build-and-rollout/python-coder/), [rust-coder](skills/M-build-and-rollout/rust-coder/) — code that fits the repo it lands in
+
+- **Reads before it writes:** the repo's own runtime, versions, helpers, callers and tests come
+  first, so the new code looks like the code around it.
+- **Small on purpose:** no compatibility shims, no options nobody asked for, no helper that
+  already exists two files over.
+- **Done means a command passed:** every claim in the report traces to a check it actually ran
+  in your repo; it never reports done over a failing check.
+
+*Use it when:* you want an agent to write or change production code in one of those four
+languages. They work on their own, without Sno Station, and `codex-coder` picks the right one
+for each task.
 
 ### S · Communication & Handoff
 

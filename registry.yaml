@@ -21,6 +21,10 @@ units:
   medic:                       {cat: M, tier: shipped}
   sno-cli:                     {cat: M, tier: shipped}
   codex-coder:                 {cat: M, tier: candidate}
+  shellscript-coder:           {cat: M, tier: candidate}
+  ts-coder:                    {cat: M, tier: candidate}
+  python-coder:                {cat: M, tier: candidate}
+  rust-coder:                  {cat: M, tier: candidate}
   handoff:                     {cat: S, tier: shipped}
   heartbeat:                   {cat: S, tier: shipped}
   join-talk:                   {cat: S, tier: shipped}

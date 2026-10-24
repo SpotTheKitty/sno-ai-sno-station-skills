@@ -1,0 +1,4 @@
+interface:
+  display_name: "TypeScript Coder"
+  short_description: "Production TypeScript with strict verified diffs"
+  default_prompt: "Use $ts-coder to implement this TypeScript change with repository-grounded context, strict types, and focused verification."

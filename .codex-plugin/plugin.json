@@ -27,7 +27,11 @@
     "./skills/J-peer-review-and-audit/peer-review/skill",
     "./skills/M-build-and-rollout/codex-coder/overlay/codex",
     "./skills/M-build-and-rollout/medic/skill",
+    "./skills/M-build-and-rollout/python-coder/skill",
+    "./skills/M-build-and-rollout/rust-coder/skill",
+    "./skills/M-build-and-rollout/shellscript-coder/skill",
     "./skills/M-build-and-rollout/sno-cli/skill",
+    "./skills/M-build-and-rollout/ts-coder/skill",
     "./skills/R-recursive-self-improvement/rem-reflect/skill",
     "./skills/S-communication-and-handoff/handoff/skill",
     "./skills/S-communication-and-handoff/heartbeat/skill",
@@ -48,5 +52,5 @@
     "./skills/T-delegation-and-work-orders/pl/skills/pl-env",
     "./skills/T-delegation-and-work-orders/pl/skills/pl-watch"
   ],
-  "version": "1.0.202610241031"
+  "version": "1.0.202610241202"
 }
