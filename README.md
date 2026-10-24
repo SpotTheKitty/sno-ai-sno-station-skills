@@ -1,11 +1,58 @@
 # Sno Station Skills — The working habits of a real team, installed into your AI agents.
 
+## Install
+
+Tell your AI agent: **`install sno.ai from GitHub`**.
+
+Or paste this command into your terminal:
+
+```bash
+sh -c 'sno_installer_body=$(curl -fsSL https://sno.ai/install) && printf "%s\n" "$sno_installer_body" | sh'
+```
+
+This installs Sno Station and sets up all 31 skills, plus the programs they call,
+for the supported agents it finds on your machine. You do not need to install each skill separately.
+
+**Already have Sno Station?** Run `sno setup` to install the skills into your agents.
+Run it again if you add another agent later.
+
+Supported agents: Claude Code, Codex, OpenClaw and Hermes Agent. Each skill declares what it needs
+from the agent. Setup uses that declaration to install it fully, install it in a reduced form,
+or skip it when the agent cannot run it.
+
+Updates come by themselves: `sno` updates itself when it finds a newer release. The full
+command list is in [Sno Station's command reference](https://github.com/sno-ai/sno-station/blob/main/docs/sno-commands.md).
+
+[Install](#install) · [What changes for you](#what-changes-for-you) · [Why these skills](#why-these-skills) · [The pain, and what fixes it](#the-pain-and-what-fixes-it) · [Stories from our own machine](#i-went-to-bed-it-changed-shifts) · [The skills](#the-skills) · [Built to be trusted](#built-to-be-trusted) · [For skill authors](#for-skill-authors) · [License](#license)
+
 ![Sno Station — Agents, assemble. Two heads are better than one, and smarter by morning.](https://raw.githubusercontent.com/sno-ai/sno-station/main/docs/images/hero-banner.png)
 
 [![license Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-97ca00.svg?labelColor=3b3b3b)](LICENSE)
 ![31 skills in 22 units](https://img.shields.io/badge/skills-31%20in%2022%20units-2dd4bf.svg?labelColor=3b3b3b)
 ![self-tested before every release](https://img.shields.io/badge/every%20release-self--tested-3b82f6.svg?labelColor=3b3b3b)
 ![agents Claude Code, Codex](https://img.shields.io/badge/agents-Claude%20Code%20%C2%B7%20Codex-f0a04b.svg?labelColor=3b3b3b)
+
+## What changes for you
+
+You keep working exactly as before, in whichever agent you like. Then:
+
+1. **You finish a change and want it checked.** Say "peer-review this". A reviewer from the other
+   vendor reads it cold, reports what would break in real use, and the author fixes the root
+   cause, round after round, until the review comes back clean.
+2. **You start a long run before bed.** Say "arm rotate-agent". If the working agent's quota
+   drops to the threshold overnight, it hands the task to a fresh agent from the other vendor,
+   with the brief verified before a single file is touched.
+3. **You come back.** Say "away brief". One page, at most 60 lines: what got done, what is
+   stuck and why, what waits for your answer, and what it cost in quota.
+4. **You have a job for someone else.** Say "write a charter". You get one file that says what
+   to deliver, what is out of bounds, what you already decided, and how each success check will
+   be proven. Any agent can then `deliver` it, and every check is proven by a recorded real run.
+5. **Every night, the team looks back.** The nightly loop reads the day's Claude Code and Codex
+   sessions, finds the mistakes that repeat, and proposes lessons and skill changes. In the
+   morning you accept the ones you like with `sno rem-reflect accept <id>`. Nothing changes
+   without that accept.
+
+## Why these skills
 
 One AI agent is a brilliant new hire with no colleagues. It reviews its own work, so it misses
 what it cannot see. It stops dead when its quota runs out, at 3 a.m., halfway through your
@@ -37,6 +84,8 @@ answered pass or fail by a real run. Nothing counts as done because an agent sai
 was scanned for personal paths and leftovers, and carries a stamp that says so. A skill that
 fails is not published.
 
+![How it works: two agents, one shared workspace, three things you get](https://raw.githubusercontent.com/sno-ai/sno-station/main/docs/images/squad-how-it-works.png)
+
 ## The pain, and what fixes it
 
 *Last updated 2026-10-23.* Every line in the left column is a real complaint from r/ClaudeCode, r/codex or r/ClaudeAI in the week of October 20, 2026. The right column is what runs on our own machines, free and open source, to make it stop.
@@ -55,51 +104,6 @@ fails is not published.
 | “Half my subagents were glorified one-liners with a fresh context window.” | Procedures live in skills, not subagents. Two agents remain, for plan and execution, and for review, because those two splits are the ones that pay. | the whole set |
 
 Each skill in the right column is in this repository, free to copy into your own agents. The memory they share, the quota watch that fires the handover, and the nightly run that writes the lessons live in [Sno Station](https://github.com/sno-ai/sno-station); install that and every skill here comes with it, so you get the whole experience at once.
-
-![How it works: two agents, one shared workspace, three things you get](https://raw.githubusercontent.com/sno-ai/sno-station/main/docs/images/squad-how-it-works.png)
-
-[Install](#install) · [What changes for you](#what-changes-for-you) · [Stories from our own machine](#i-went-to-bed-it-changed-shifts) · [The skills](#the-skills) · [Built to be trusted](#built-to-be-trusted) · [For skill authors](#for-skill-authors) · [License](#license)
-
-## Install
-
-*Last updated 2026-10-19.* The easiest way: tell your AI agent `install sno.ai from GitHub`.
-
-Or do it yourself with one command. It installs the `sno` command and sets up Sno Station, which puts
-every skill in this repository, plus the small programs they call (each one runs as `sno <name>`),
-into every agent it finds:
-
-```bash
-sh -c 'sno_installer_body=$(curl -fsSL https://sno.ai/install) && printf "%s\n" "$sno_installer_body" | sh'
-```
-
-It supports Claude Code, Codex, OpenClaw and Hermes Agent. If you install another agent later, run
-`sno setup` to connect it too. Each skill declares what it needs from the
-agent (a shell, background processes, a hook that adds context before each turn), and setup
-reads that declaration to install the skill fully, install it in a reduced form, or skip it on
-an agent that cannot run it. You never get a skill that silently cannot work.
-
-Updates come by themselves: `sno` updates itself when it finds a newer release. The full
-command list is in [Sno Station's command reference](https://github.com/sno-ai/sno-station/blob/main/docs/sno-commands.md).
-
-## What changes for you
-
-You keep working exactly as before, in whichever agent you like. Then:
-
-1. **You finish a change and want it checked.** Say "peer-review this". A reviewer from the other
-   vendor reads it cold, reports what would break in real use, and the author fixes the root
-   cause, round after round, until the review comes back clean.
-2. **You start a long run before bed.** Say "arm rotate-agent". If the working agent's quota
-   drops to the threshold overnight, it hands the task to a fresh agent from the other vendor,
-   with the brief verified before a single file is touched.
-3. **You come back.** Say "away brief". One page, at most 60 lines: what got done, what is
-   stuck and why, what waits for your answer, and what it cost in quota.
-4. **You have a job for someone else.** Say "write a charter". You get one file that says what
-   to deliver, what is out of bounds, what you already decided, and how each success check will
-   be proven. Any agent can then `deliver` it, and every check is proven by a recorded real run.
-5. **Every night, the team looks back.** The nightly loop reads the day's Claude Code and Codex
-   sessions, finds the mistakes that repeat, and proposes lessons and skill changes. In the
-   morning you accept the ones you like with `sno rem-reflect accept <id>`. Nothing changes
-   without that accept.
 
 ## "I went to bed. It changed shifts."
 
