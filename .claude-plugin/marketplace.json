@@ -49,16 +49,15 @@
     {
       "name": "sno-station-standalone",
       "description": "Sno Station skills that run without Sno Station programs and without hooks.",
-      "source": "./",
-      "strict": false,
+      "source": "./plugins/sno-station-standalone",
       "skills": [
-        "./skills/J-peer-review-and-audit/agentic-walkthrough/skill",
-        "./skills/J-peer-review-and-audit/e2e/skills/e2e-environment-preflight",
-        "./skills/J-peer-review-and-audit/e2e/skills/e2e-red-triage",
-        "./skills/J-peer-review-and-audit/first-principles-review/skill",
-        "./skills/J-peer-review-and-audit/less-is-more/skill",
-        "./skills/J-peer-review-and-audit/owner-intent-audit/skill",
-        "./skills/T-delegation-and-work-orders/charter/skill"
+        "./skills/agentic-walkthrough",
+        "./skills/e2e-environment-preflight",
+        "./skills/e2e-red-triage",
+        "./skills/first-principles-review",
+        "./skills/less-is-more",
+        "./skills/owner-intent-audit",
+        "./skills/charter"
       ]
     }
   ]

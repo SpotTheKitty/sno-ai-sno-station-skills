@@ -1,0 +1,9 @@
+{
+  "name": "sno-station",
+  "description": "Every Sno Station skill: peer review, delegation, handoff, reporting and self-improvement for coding agents. Most need the Sno Station programs that `sno setup` installs.",
+  "author": {"name": "Sno Station Skills contributors", "url": "https://github.com/sno-ai/sno-station-skills"},
+  "homepage": "https://github.com/sno-ai/sno-station-skills",
+  "repository": "https://github.com/sno-ai/sno-station-skills",
+  "license": "Apache-2.0",
+  "keywords": ["code-review", "delegation", "handoff", "agents"]
+}

@@ -1,0 +1,3 @@
+# The redaction test feeds fake secrets to the redactor on purpose.
+[scanner]
+ignore_paths = ["skills/R-recursive-self-improvement/rem-reflect/skill/scripts/harvest.test.ts"]

@@ -293,13 +293,13 @@ cmd_whoami() {
         registered_elsewhere=1
     fi
 
-    local token
-    token="$(owner_token "$repo")"
-    [[ -n "$letter" ]] && token="$token-$letter"
+    local owner_id
+    owner_id="$(owner_token "$repo")"
+    [[ -n "$letter" ]] && owner_id="$owner_id-$letter"
     printf 'repository   %s\n' "$repo"
     printf 'cos address  %s\n' "$address"
-    printf 'owner token  %s\n' "$token"
-    printf 'lanes owned  %s\n' "$(owned_count "$token")"
+    printf 'owner token  %s\n' "$owner_id"
+    printf 'lanes owned  %s\n' "$(owned_count "$owner_id")"
     if ((registered_elsewhere == 1)); then
         printf '\nNOTE: %s already holds a registered window.\n' "$address" >&2
         printf 'If that is not this window, you are the second COS in this repository\n' >&2
@@ -311,7 +311,7 @@ cmd_whoami() {
 
 cmd_register() {
     local letter="${1:-${COS_SEAT:-}}"
-    local repo address token runtime holder now staging first_record selected_state=''
+    local repo address owner_id runtime holder now staging first_record selected_state=''
     local row_repo row_lane row_address row_heartbeat row_runtime row_owner row_state row_note extra
     local relevant_count=0 compatible_count=0
 
@@ -322,8 +322,8 @@ cmd_register() {
     [[ "$repo" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] ||
         die "working-directory repository is not routable: $repo"
     address="$(seat_address "$repo" "$letter")"
-    token="$(owner_token "$repo")"
-    [[ -z "$letter" ]] || token="$token-$letter"
+    owner_id="$(owner_token "$repo")"
+    [[ -z "$letter" ]] || owner_id="$owner_id-$letter"
     current_window
     [[ -n "$WINDOW_IDENTITY" ]] || die "register must run inside a tmux pane (TMUX_PANE is unset) for $address; an Orca terminal also works if Orca is installed (ORCA_TAB_ID with ORCA_TERMINAL_HANDLE)"
     [[ -n "$WINDOW_HANDLE" ]] || die "register needs ORCA_TERMINAL_HANDLE for $address"
@@ -335,7 +335,7 @@ cmd_register() {
     runtime="${COS_RUNTIME:-unknown}"
     register_reach "$address" ||
         die "could not register COS seat: $address"
-    printf 'cos-claim: registered address=%s owner=%s\n' "$address" "$token"
+    printf 'cos-claim: registered address=%s owner=%s\n' "$address" "$owner_id"
 
     if ! mkdir -p -- "$(dirname -- "$REGISTRY")" ||
        [[ -L "$REGISTRY" || ( -e "$REGISTRY" && ! -f "$REGISTRY" ) ]]; then
@@ -369,7 +369,7 @@ cmd_register() {
               "$row_address" == "$address" ]]; then
             ((relevant_count += 1))
             if [[ -z "$extra" && "$row_repo" == "$repo" && "$row_lane" == - &&
-                  "$row_address" == "$address" && "$row_owner" == "$token" &&
+                  "$row_address" == "$address" && "$row_owner" == "$owner_id" &&
                   -n "$row_runtime" && -n "$row_note" ]]; then
                 ((compatible_count += 1))
                 selected_state="$row_state"
@@ -384,13 +384,13 @@ cmd_register() {
         chmod --reference="$REGISTRY" "$staging"
         printf '%s\t-\t%s\t%s-cos%s\t%s\t%s\tRUN\tCOS identity registered %s.\n' \
             "$repo" "$address" "$repo" "${letter:+-$letter}" "$runtime" \
-            "$token" "$now" >>"$staging"
+            "$owner_id" "$now" >>"$staging"
         mv -f -- "$staging" "$REGISTRY"
     elif ((relevant_count == 1 && compatible_count == 1)); then
         if [[ "$selected_state" != RUN ]]; then
             staging="$(mktemp "${REGISTRY}.register.XXXXXXXXXX")"
             awk -F '\t' -v OFS='\t' -v repo="$repo" -v address="$address" \
-                -v owner="$token" '
+                -v owner="$owner_id" '
                 $1 == repo && $2 == "-" && $3 == address && $6 == owner { $7 = "RUN" }
                 { print }
             ' "$REGISTRY" >"$staging"
