@@ -4,11 +4,11 @@
   "tier": "candidate",
   "split": {},
   "source": {
-    "commit": "e27d56a7d8c00dd8c38240e7c2936b2aaa39e4d4",
+    "commit": "efb5c34f0b01ab27c685ccfe9ce70fe413a48c4f",
     "unit_tree_clean": true
   },
   "selftests_run": 1,
   "contract_sha256": "5022662b4807e817533b5edc1700fb40e87deccaf47d25f82d941baeacf18b62",
-  "payload_sha256": "23380d81636c39fdd47eb2c007519436200a1f9938f07245e87094afcb1e2f79",
-  "published_at": "2026-10-24T12:04:45Z"
+  "payload_sha256": "20350ecde201f1ba9680f571abaf3b105a7746ce55f7e0b3da3147d2bfca0f8e",
+  "published_at": "2026-10-24T21:47:29Z"
 }

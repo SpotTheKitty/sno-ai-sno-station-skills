@@ -6,11 +6,11 @@
     "cos-evolve": "R"
   },
   "source": {
-    "commit": "e27d56a7d8c00dd8c38240e7c2936b2aaa39e4d4",
+    "commit": "efb5c34f0b01ab27c685ccfe9ce70fe413a48c4f",
     "unit_tree_clean": true
   },
   "selftests_run": 4,
   "contract_sha256": "5022662b4807e817533b5edc1700fb40e87deccaf47d25f82d941baeacf18b62",
-  "payload_sha256": "8fdd38e97323afc4469bc4fb85f10c412b1979767be8385a6e9d65209c874d27",
-  "published_at": "2026-10-24T12:04:45Z"
+  "payload_sha256": "6d812473c27f1ccbc9b16dfcc7b586e3331a7cec6ec169edc60883eae0520ede",
+  "published_at": "2026-10-24T21:47:29Z"
 }
