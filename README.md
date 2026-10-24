@@ -58,6 +58,25 @@ form, or skip it when the agent cannot run it.
 Updates come by themselves: `sno` updates itself when it finds a newer release. The full
 command list is in [Sno Station's command reference](https://github.com/sno-ai/sno-station/blob/main/docs/sno-commands.md).
 
+### Install as a plugin
+
+Claude Code:
+
+```bash
+claude plugin marketplace add sno-ai/sno-station-skills
+claude plugin install sno-station@sno-ai
+```
+
+Codex:
+
+```bash
+codex plugin marketplace add sno-ai/sno-station-skills
+codex plugin add sno-station@sno-ai
+```
+
+`sno-station` holds all 31 skills; most of them call Sno Station programs, so install Sno Station too.
+For only the 7 skills that run without Sno Station, install `sno-station-standalone@sno-ai` instead.
+
 [Install](#install) · [What changes for you](#what-changes-for-you) · [Why these skills](#why-these-skills) · [The pain, and what fixes it](#the-pain-and-what-fixes-it) · [Stories from our own machine](#i-went-to-bed-it-changed-shifts) · [The skills](#the-skills) · [Built to be trusted](#built-to-be-trusted) · [For skill authors](#for-skill-authors) · [License](#license)
 
 ## What changes for you

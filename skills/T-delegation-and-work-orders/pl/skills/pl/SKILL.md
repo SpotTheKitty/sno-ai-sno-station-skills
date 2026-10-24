@@ -5,7 +5,7 @@ hooks:
   UserPromptSubmit:
     - hooks:
         - type: command
-          command: "cat \"$HOME/.claude/skills/pl/references/pocket-card.md\" 2>/dev/null || true"
+          command: "find \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/pl}\" -path '*/pl/references/pocket-card.md' -exec cat {} + 2>/dev/null || true"
 requires:
   programs:
     - {name: reach, min_version: "2.0"}
@@ -357,8 +357,8 @@ workspace app) is used only if installed; tmux is the primary path. Export `SNO_
 owner's own Reach address, e.g. `owner.me@host1`) before booting: it receives cards for any lane no
 COS has claimed. The scripts check what they use and stop with one message when something is
 missing. `spawn-exec.sh` starts a Codex executor unless you pass `--runtime claude`. The frontmatter
-hook reads `$HOME/.claude/skills/pl/references/pocket-card.md`; under another install location, or in
-Codex, it prints nothing and the pocket card is simply not shown.
+hook prints `references/pocket-card.md` under a `sno setup` or Claude plugin install; installed
+elsewhere, or in Codex, it prints nothing and the pocket card is simply not shown.
 
 **Terms.** Each word is defined once, here; the sub-skills use these meanings.
 - *COS* (Chief of Staff): the agent of the optional `cos` skill that supervises one to three PLs of a

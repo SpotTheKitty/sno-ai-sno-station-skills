@@ -5,7 +5,7 @@ hooks:
   UserPromptSubmit:
     - hooks:
         - type: command
-          command: "cat \"$HOME/.claude/skills/cos/references/pocket-card.md\" 2>/dev/null || true"
+          command: "find \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/cos}\" -path '*/cos/references/pocket-card.md' -exec cat {} + 2>/dev/null || true"
 requires:
   programs:
     - {name: reach, min_version: "2.0"}
@@ -409,9 +409,9 @@ and the `sno` program with its `sno heartbeat` and `sno report-time` subcommands
 signal (§Liveness); without it judge liveness from the seat and inbox. The `pl` skill must
 be installed beside this one; COS runs its scripts through `PL_SKILL_DIR`. The scripts stop
 with one clear message when a prerequisite is missing.
-The hook in this file's frontmatter prints the pocket card on Claude Code only, from
-`$HOME/.claude/skills/cos/references/pocket-card.md`; on any other harness, or if the skill is
-installed elsewhere, read `references/pocket-card.md` by hand.
+The hook in this file's frontmatter prints the pocket card on Claude Code only, from the Claude plugin
+folder under a plugin install, otherwise from `$HOME/.claude/skills/cos/references/pocket-card.md`;
+on any other harness, or if the skill is installed elsewhere, read `references/pocket-card.md` by hand.
 
 Terms. PL: Project Lead, one per lane. Executor: an agent working one charter. Charter: the
 written brief of what to deliver, decided with the owner (see the `charter` skill).
