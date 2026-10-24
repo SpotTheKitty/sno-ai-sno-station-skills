@@ -37,6 +37,25 @@ answered pass or fail by a real run. Nothing counts as done because an agent sai
 was scanned for personal paths and leftovers, and carries a stamp that says so. A skill that
 fails is not published.
 
+## The pain, and what fixes it
+
+*Last updated 2026-10-23.* Every line in the left column is a real complaint from r/ClaudeCode, r/codex or r/ClaudeAI in the week of October 20, 2026. The right column is what runs on our own machines, free and open source, to make it stop.
+
+| What people said this week | What fixes it | Where |
+|---|---|---|
+| “Ran out of my 5-hour limit within 30 minutes.” | Stop sending the biggest model to do everything. Opus plans and reviews; Codex writes the code, called as an agent from the same session. When one subscription runs dry, the other picks the task up from the same memory. | `codex-coder`, `sno reach call` |
+| “Lost 10 hours of overnight work to ‘this model is at capacity’.” | At 2% of its quota the working agent writes a handover brief and wakes the other vendor's agent, which continues from the exact commit. You were asleep. | `rotate-agent` |
+| “1,100 files, 30,000 lines. I don't have the token budget to review their PRs.” | Whoever pushes, reviews first: the author runs a review by the other vendor, in a fresh session that never saw the conversation, and fixes what comes back before anyone else looks. | `peer-review` |
+| “A reviewer subagent checked every commit for two weeks. 86 runs, it stopped exactly one.” | A harness reviewing itself finds nothing real. The reviewer is always a different model in a different harness, with none of the author's chat. | `peer-review` |
+| “Codex never finishes a review.” | Hard caps written into the skill: 3 rounds on code, 5 on a plan, 1 on tests, then it stops and waits for a person. A run that has written nothing for 15 minutes is killed as stalled. | `peer-review`, `codex-coder`, `heartbeat` |
+| “Codex treats every byte like a criminal.” | Speculative safeguards, blockers and hashes are the first thing the review deletes. Nothing goes in without an observed failure asking for it. | `less-is-more` |
+| “When Claude says it won't change something, is that reason stored anywhere Codex reads next time?” | Every finding is filed once, with a status only a human sets. A finding raised again updates its row instead of coming back as new, and earlier rulings are handed to the next review. | `peer-review` findings ledger |
+| “It said done. Nothing happened.” | A task carries a written list of success checks, each answered pass or fail by a real run. An agent saying “done” counts for nothing. | `pl` work orders |
+| “Tomorrow it makes the same mistake it made today.” | Every night a separate model reads the day's sessions, turns your corrections into one-line lessons, and you approve what stays. On our own machine: 162 written so far, 7 approved. The bottleneck is us. | Self Learning (`R` skills) |
+| “Half my subagents were glorified one-liners with a fresh context window.” | Procedures live in skills, not subagents. Two agents remain, for plan and execution, and for review, because those two splits are the ones that pay. | the whole set |
+
+Each skill in the right column is in this repository, free to copy into your own agents. The memory they share, the quota watch that fires the handover, and the nightly run that writes the lessons live in [Sno Station](https://github.com/sno-ai/sno-station); install that and every skill here comes with it, so you get the whole experience at once.
+
 ![How it works: two agents, one shared workspace, three things you get](https://raw.githubusercontent.com/sno-ai/sno-station/main/docs/images/squad-how-it-works.png)
 
 [Install](#install) · [What changes for you](#what-changes-for-you) · [Stories from our own machine](#i-went-to-bed-it-changed-shifts) · [The skills](#the-skills) · [Built to be trusted](#built-to-be-trusted) · [For skill authors](#for-skill-authors) · [License](#license)
