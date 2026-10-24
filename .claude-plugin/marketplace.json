@@ -24,6 +24,7 @@
         "./skills/J-peer-review-and-audit/less-is-more/skill",
         "./skills/J-peer-review-and-audit/owner-intent-audit/skill",
         "./skills/J-peer-review-and-audit/peer-review/skill",
+        "./skills/J-peer-review-and-audit/test-writer/skill",
         "./skills/M-build-and-rollout/codex-coder/overlay/claude",
         "./skills/M-build-and-rollout/medic/skill",
         "./skills/M-build-and-rollout/python-coder/skill",
@@ -67,7 +68,8 @@
         "./skills/shellscript-coder",
         "./skills/ts-coder",
         "./skills/python-coder",
-        "./skills/rust-coder"
+        "./skills/rust-coder",
+        "./skills/test-writer"
       ]
     }
   ]

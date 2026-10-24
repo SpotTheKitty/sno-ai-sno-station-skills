@@ -25,6 +25,7 @@
     "./skills/J-peer-review-and-audit/less-is-more/skill",
     "./skills/J-peer-review-and-audit/owner-intent-audit/skill",
     "./skills/J-peer-review-and-audit/peer-review/skill",
+    "./skills/J-peer-review-and-audit/test-writer/skill",
     "./skills/M-build-and-rollout/codex-coder/overlay/codex",
     "./skills/M-build-and-rollout/medic/skill",
     "./skills/M-build-and-rollout/python-coder/skill",
@@ -52,5 +53,5 @@
     "./skills/T-delegation-and-work-orders/pl/skills/pl-env",
     "./skills/T-delegation-and-work-orders/pl/skills/pl-watch"
   ],
-  "version": "1.0.202610241202"
+  "version": "1.0.202610241204"
 }

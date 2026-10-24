@@ -3,7 +3,7 @@
 ![Sno Station — Agents, assemble. Two heads are better than one, and smarter by morning.](https://raw.githubusercontent.com/sno-ai/sno-station/main/docs/images/hero-banner.png)
 
 [![license Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-97ca00.svg?labelColor=3b3b3b)](LICENSE)
-![36 skills in 27 units](https://img.shields.io/badge/skills-36%20in%2027%20units-2dd4bf.svg?labelColor=3b3b3b)
+![37 skills in 28 units](https://img.shields.io/badge/skills-37%20in%2028%20units-2dd4bf.svg?labelColor=3b3b3b)
 ![self-tested before every release](https://img.shields.io/badge/every%20release-self--tested-3b82f6.svg?labelColor=3b3b3b)
 ![agents Claude Code, Codex](https://img.shields.io/badge/agents-Claude%20Code%20%C2%B7%20Codex-f0a04b.svg?labelColor=3b3b3b)
 
@@ -17,7 +17,7 @@ Copy this prompt into your agent's chat:
 Install sno.ai from GitHub.
 ```
 
-This installs Sno Station and sets up all 36 skills, plus the programs they call,
+This installs Sno Station and sets up all 37 skills, plus the programs they call,
 for the supported agents it finds on your machine.
 
 Or paste this command into your terminal:
@@ -74,7 +74,7 @@ codex plugin marketplace add sno-ai/sno-station-skills
 codex plugin add sno-station@sno-ai
 ```
 
-`sno-station` holds all 36 skills; most of them call Sno Station programs, so install Sno Station too.
+`sno-station` holds all 37 skills; most of them call Sno Station programs, so install Sno Station too.
 For only the 7 skills that run without Sno Station, install `sno-station-standalone@sno-ai` instead.
 
 [Install](#install) · [What changes for you](#what-changes-for-you) · [Why these skills](#why-these-skills) · [The pain, and what fixes it](#the-pain-and-what-fixes-it) · [Stories from our own machine](#i-went-to-bed-it-changed-shifts) · [The skills](#the-skills) · [Built to be trusted](#built-to-be-trusted) · [For skill authors](#for-skill-authors) · [License](#license)
@@ -195,7 +195,7 @@ in all three had dropped to zero.
 
 ## The skills
 
-36 skills, shipped as 27 units, filed under six things a team has to be able to do. A unit is
+37 skills, shipped as 28 units, filed under six things a team has to be able to do. A unit is
 one skill or a small family that installs together. The full index with links is
 [skills/README.md](skills/README.md).
 
@@ -290,6 +290,18 @@ one skill or a small family that installs together. The full index with links is
   crashed, empty versus unreadable), then decides: product bug, or a new environment check.
 
 *Use it when:* you run end-to-end suites against real services.
+
+#### [test-writer](skills/J-peer-review-and-audit/test-writer/) — tests that can actually go red
+
+- **Real over mocked:** the real parser, filesystem, database or service whenever the repo can
+  provide it; a mock never stands in for the thing being tested.
+- **Every assertion can fail:** it checks returned content, saved state and real side effects,
+  not call counts, and never loosens an assertion to make a test pass.
+- **Runs what it wrote, nothing more:** the narrowest command for the changed test, not the
+  whole suite, and the report says what ran and what it showed.
+
+*Use it when:* you ask an agent to write or fix tests, fixtures or evals. It works on its own,
+without Sno Station.
 
 ### M · Build & Rollout
 

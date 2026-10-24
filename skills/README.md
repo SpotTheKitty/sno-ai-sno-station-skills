@@ -58,6 +58,7 @@ Colleagues review each other's work, and nothing counts as done until it passes 
 - [less-is-more](J-peer-review-and-audit/less-is-more/) — write the least code that works and cut what was over-built
 - [owner-intent-audit](J-peer-review-and-audit/owner-intent-audit/) — check plans, tests or code against what the owner actually asked for
 - [peer-review](J-peer-review-and-audit/peer-review/) — adversarial review and fix loop by an independent reviewer
+- [test-writer](J-peer-review-and-audit/test-writer/) — write tests that exercise the real code and can fail when it is wrong
 
 ## M · Build & Rollout
 
