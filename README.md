@@ -7,6 +7,8 @@
 ![self-tested before every release](https://img.shields.io/badge/every%20release-self--tested-3b82f6.svg?labelColor=3b3b3b)
 ![agents Claude Code, Codex](https://img.shields.io/badge/agents-Claude%20Code%20%C2%B7%20Codex-f0a04b.svg?labelColor=3b3b3b)
 
+Find out more on our website, [sno.ai](https://sno.ai).
+
 ## Install
 
 ### All skills with Sno Station
