@@ -112,7 +112,7 @@ Do not restate the language standards in the handoff. The selected Codex skills 
 3. Start the run in the background — one Bash call, `run_in_background: true`, never a trailing `&`:
 
    ```
-   cd <workspace> && codex exec --skip-git-repo-check --sandbox danger-full-access \
+   cd <workspace> && codex exec --skip-git-repo-check \
        [--model <value>] -c model_reasoning_effort=<effort> -c model_reasoning_summary=detailed \
        -o <scratch>/codex-<slug>.last.md - < <scratch>/codex-<slug>.prompt.md \
        > <scratch>/codex-<slug>.out.log 2> <scratch>/codex-<slug>.err.log; \
